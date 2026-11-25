@@ -8,14 +8,17 @@
 		type WallLayout
 	} from '#lib/engine/index.ts';
 	import { OBSTRUCTION_NAMES } from '#lib/labels.ts';
+	import { levelLines } from '#lib/plan-sheet.ts';
 
 	type Props = {
 		wall: Wall;
 		layout: WallLayout | undefined;
 		design: Design;
 		units: UnitPrefs;
+		/** Also mark the height of every rail down the right-hand side. */
+		levels?: boolean;
 	};
-	let { wall, layout, design, units }: Props = $props();
+	let { wall, layout, design, units, levels = false }: Props = $props();
 
 	// The drawing is in millimetres with the origin at the top-left of the
 	// wall; the engine's origin is bottom-left, so y is flipped here.
@@ -27,6 +30,20 @@
 	const text = $derived(Math.max(width, height) / 48);
 	const margin = $derived(text * 3);
 	const fmt = (length: Length) => formatLength(length, units);
+
+	// Heights above the floor, written beside the wall. Marks too close
+	// together to read are thinned out, working down from the top so the
+	// overall height is always shown; the placement table has them all.
+	const marks = $derived.by(() => {
+		if (!levels || !layout) return [];
+		const kept: Length[] = [];
+		for (const level of levelLines(layout).reverse()) {
+			const last = kept[kept.length - 1];
+			if (last === undefined || mm(last - level) >= text * 1.15) kept.push(level);
+		}
+		return kept;
+	});
+	const rightMargin = $derived(levels ? text * 8 : margin);
 
 	// Where another wall's boards meet this one, they are seen edge-on as a
 	// strip one board thick: inside the wall end at an inside corner, and just
@@ -57,7 +74,7 @@
 </script>
 
 <svg
-	viewBox="{-margin} {-margin} {width + margin * 2} {height + margin * 2}"
+	viewBox="{-margin} {-margin} {width + margin + rightMargin} {height + margin * 2}"
 	role="img"
 	aria-label="Elevation drawing of {wall.name}"
 >
@@ -121,6 +138,13 @@
 		</text>
 	{/each}
 
+	{#each marks as level (level)}
+		<line class="level" x1={width} y1={height - mm(level)} x2={width + text * 0.8} y2={height - mm(level)} />
+		<text class="level-label" x={width + text * 1.1} y={height - mm(level)} font-size={text * 0.9}>
+			{fmt(level)}
+		</text>
+	{/each}
+
 	<line class="floor" x1={-margin / 2} y1={height} x2={width + margin / 2} y2={height} />
 	<text class="dimension" x={width / 2} y={height + text * 1.8} font-size={text}>
 		{fmt(wall.width)}
@@ -179,6 +203,14 @@
 	.floor {
 		stroke: var(--line);
 		stroke-width: 2;
+	}
+	.level {
+		stroke: var(--line);
+		stroke-width: 1;
+	}
+	text.level-label {
+		text-anchor: start;
+		fill: var(--ink-soft);
 	}
 	text {
 		text-anchor: middle;

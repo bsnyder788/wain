@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { account, setCredits } from '#lib/account.svelte.ts';
+	import { account, loadAccount, setCredits } from '#lib/account.svelte.ts';
 	import { ApiError, suggestDesigns, type Suggestion } from '#lib/api.ts';
 	import { formatLength, type Design, type Project } from '#lib/engine/index.ts';
 	import { ideas, saveIdeas } from '#lib/ideas.svelte.ts';
@@ -16,12 +16,14 @@
 
 	let busy = $state(false);
 	let failure = $state<string | null>(null);
+	let outOfCredits = $state(false);
 
 	async function suggest() {
 		const photo = wall.photo;
 		if (!photo) return;
 		busy = true;
 		failure = null;
+		outOfCredits = false;
 		try {
 			const image = await loadPhoto(photo.image_id);
 			if (!image) throw new ApiError(0, 'missing', 'This photo is no longer stored on this device.');
@@ -29,12 +31,13 @@
 			saveIdeas(wall.id, response);
 			setCredits(response.credits);
 		} catch (error) {
-			failure =
-				error instanceof ApiError && error.code === 'insufficient_credits'
-					? 'You are out of credits. Buying more is coming soon.'
-					: error instanceof ApiError
-						? error.message
-						: 'Something went wrong. Try again.';
+			if (error instanceof ApiError && error.code === 'insufficient_credits') {
+				outOfCredits = true;
+				// The balance on screen was evidently stale; fetch the real one.
+				void loadAccount();
+			} else {
+				failure = error instanceof ApiError ? error.message : 'Something went wrong. Try again.';
+			}
 		} finally {
 			busy = false;
 		}
@@ -89,6 +92,11 @@
 	{/if}
 
 	{#if failure}<p class="field-error" role="alert">{failure}</p>{/if}
+	{#if outOfCredits}
+		<p class="field-error" role="alert">
+			You are out of credits. <a href="/account">Get more on your account page.</a>
+		</p>
+	{/if}
 
 	{#if result}
 		{#if result.observations}<p class="observations">{result.observations}</p>{/if}

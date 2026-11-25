@@ -17,6 +17,17 @@ pub struct Config {
     /// Development only: answer suggestion requests with fixed samples
     /// instead of calling a model.
     pub fake_ai: bool,
+    /// Selling credits through Stripe, when all three settings are present.
+    pub stripe: Option<StripeConfig>,
+    /// Development only: a sample credit pack that costs nothing.
+    pub fake_billing: bool,
+}
+
+pub struct StripeConfig {
+    pub secret_key: String,
+    pub webhook_secret: String,
+    /// `(credits, Stripe price id)` for each pack on sale.
+    pub packs: Vec<(i32, String)>,
 }
 
 impl Config {
@@ -44,14 +55,36 @@ impl Config {
             return Err("no email provider is configured; set WAIN_DEV=1 to run locally".into());
         }
 
+        let stripe = match (
+            var("STRIPE_SECRET_KEY"),
+            var("STRIPE_WEBHOOK_SECRET"),
+            var("WAIN_CREDIT_PACKS"),
+        ) {
+            (Some(secret_key), Some(webhook_secret), Some(packs)) => Some(StripeConfig {
+                secret_key,
+                webhook_secret,
+                packs: crate::billing::parse_packs(&packs)?,
+            }),
+            (None, None, None) => None,
+            _ => {
+                return Err(
+                    "to sell credits, set all of STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET and \
+                     WAIN_CREDIT_PACKS"
+                        .into(),
+                );
+            }
+        };
+        let flag = |name: &str| var(name).is_some_and(|value| value == "1" || value == "true");
+
         Ok(Config {
             database_url,
             port,
             secret: secret.into_bytes(),
             dev,
             anthropic_api_key: var("ANTHROPIC_API_KEY"),
-            fake_ai: dev
-                && var("WAIN_FAKE_AI").is_some_and(|value| value == "1" || value == "true"),
+            fake_ai: dev && flag("WAIN_FAKE_AI"),
+            stripe,
+            fake_billing: dev && flag("WAIN_FAKE_BILLING"),
         })
     }
 }

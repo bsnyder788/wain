@@ -9,10 +9,14 @@
 import type { Project } from '#lib/engine/index.ts';
 import type { Account } from '#lib/engine/bindings/Account.ts';
 import type { ApiErrorBody } from '#lib/engine/bindings/ApiErrorBody.ts';
+import type { CheckoutResponse } from '#lib/engine/bindings/CheckoutResponse.ts';
+import type { Pack } from '#lib/engine/bindings/Pack.ts';
+import type { PacksResponse } from '#lib/engine/bindings/PacksResponse.ts';
 import type { StartResponse } from '#lib/engine/bindings/StartResponse.ts';
 import type { SuggestionsResponse } from '#lib/engine/bindings/SuggestionsResponse.ts';
 
 export type { Account } from '#lib/engine/bindings/Account.ts';
+export type { Pack } from '#lib/engine/bindings/Pack.ts';
 export type { StartResponse } from '#lib/engine/bindings/StartResponse.ts';
 export type { Suggestion } from '#lib/engine/bindings/Suggestion.ts';
 export type { SuggestionsResponse } from '#lib/engine/bindings/SuggestionsResponse.ts';
@@ -93,4 +97,25 @@ export function suggestDesigns(
 	form.set('wall', String(wallIndex));
 	form.set('image', photo, 'wall.jpg');
 	return request('/suggestions', { method: 'POST', body: form });
+}
+
+/** The credit packs on sale. Empty when this server does not sell credits. */
+export async function fetchPacks(): Promise<Pack[]> {
+	return (await request<PacksResponse>('/billing/packs')).packs;
+}
+
+/** Starts a purchase and returns the payment page to send the browser to. */
+export async function startCheckout(pack: string): Promise<string> {
+	return (await post<CheckoutResponse>('/billing/checkout', { pack })).url;
+}
+
+/** A price in a currency's smallest unit, as text: 500 and `usd` is $5.00. */
+export function formatMoney(amount: number, currency: string): string {
+	const format = new Intl.NumberFormat(undefined, {
+		style: 'currency',
+		currency: currency.toUpperCase()
+	});
+	// Most currencies have two decimal places; some, like the yen, have none.
+	const digits = format.resolvedOptions().maximumFractionDigits ?? 2;
+	return format.format(amount / 10 ** digits);
 }

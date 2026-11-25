@@ -144,3 +144,26 @@ input[aria-invalid='true'] {
 .check input {
 	margin-top: 0.25rem;
 }
+
+/* Printing: only the plan page is designed for paper. Everything that is
+   chrome on screen is hidden, and panels lose their boxes. */
+@page {
+	margin: 12mm;
+}
+@media print {
+	:root {
+		background: white;
+	}
+	header,
+	.no-print {
+		display: none !important;
+	}
+	main {
+		max-width: none !important;
+		padding: 0 !important;
+	}
+	.panel {
+		border: none;
+		padding: 0;
+	}
+}

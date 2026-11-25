@@ -92,6 +92,14 @@ happen in the browser. Accounts and AI features need it, and Vite proxies
 Not handled yet: choosing which wall runs through at a corner (it follows
 wall order), corners that are out of square, stairs, and sheet goods.
 
+## Printed plan
+
+The Plan page (`apps/web/src/routes/plan`) lays the project out for paper: a
+summary, then for each wall a drawing with level-line heights and a table of
+where every piece goes (from the wall's left end and up from the floor), then
+the cut list with tick boxes and the shopping list. "Print or save as PDF"
+uses the browser's own print dialog, so it works offline and needs no server.
+
 ## Photo preview
 
 - The user marks a wall's four corners on a photo. `wain-core`'s
@@ -133,6 +141,12 @@ Everything is under `/api/v1`. Settings come from the environment
 - State-changing requests from another site are refused (the `Origin` host
   must match `Host`), on top of the cookie's `SameSite` setting.
 
+- **Buying credits** goes through Stripe Checkout, so card details never
+  reach this server. Packs are configured as `credits:price_id` pairs and
+  their prices are read from Stripe at startup. Credits are granted only by
+  the signed webhook, once per checkout session, and only when the session is
+  paid. `WAIN_FAKE_BILLING=1` offers a sample pack that charges nothing.
+
 Not built yet: email delivery, Google and Apple sign-in, saving projects and
-photos to the server, photoreal renders, and billing.
+photos to the server, and photoreal renders.
 

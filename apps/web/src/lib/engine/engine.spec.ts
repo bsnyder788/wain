@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import { rectPoints, toPhoto, toWall } from '../perspective.ts';
+import { designFacts, levelLines, placements } from '../plan-sheet.ts';
 import {
 	defaultDesign,
 	formatLength,
@@ -94,6 +95,45 @@ describe('engine', () => {
 		expect(normalizeProject(project)?.walls[0].photo).toBeNull();
 		expect(normalizeProject({ not: 'a project' })).toBeUndefined();
 		expect(normalizeProject(null)).toBeUndefined();
+	});
+
+	it('lists where each piece goes for the printed plan', () => {
+		const project = starterProject('imperial');
+		const result = planProject(project);
+		if (!('ok' in result)) throw new Error('expected a plan');
+		const rows = placements(result.ok.walls[0]);
+
+		// The rail first, then ten battens left to right.
+		expect(rows).toHaveLength(11);
+		expect(rows[0]).toMatchObject({ label: 'B', piece: 'Top rail', fromLeft: 0, aboveFloor: 50.5 * INCH });
+		expect(rows[1]).toMatchObject({ label: 'A', piece: 'Batten', fromLeft: 0, aboveFloor: 5.25 * INCH });
+		expect(rows[10].fromLeft).toBe(141.5 * INCH);
+		const lefts = rows.slice(1).map((row) => row.fromLeft);
+		expect(lefts).toEqual([...lefts].sort((a, b) => a - b));
+
+		// Level lines: the underside and the top of the rail.
+		expect(levelLines(result.ok.walls[0])).toEqual([50.5 * INCH, 54 * INCH]);
+		expect(designFacts(project.design, imperial)).toContainEqual(['Battens', '2 1/2" wide']);
+	});
+
+	it('lists picture-frame boxes as boxes, not four strips each', () => {
+		const project = starterProject('imperial');
+		project.design = defaultDesign('picture_frame', 'imperial');
+		const result = planProject(project);
+		if (!('ok' in result)) throw new Error('expected a plan');
+		const rows = placements(result.ok.walls[0]);
+
+		// One chair rail and five boxes, from 20 strips of moulding.
+		expect(rows.map((row) => row.piece)).toEqual([
+			'Chair rail',
+			...Array(5).fill('Box of frame moulding')
+		]);
+		const box = rows[1];
+		expect(box.label).toBe('B + C');
+		expect(box.fromLeft).toBe(3.5 * INCH);
+		expect(box.aboveFloor).toBe(8.75 * INCH);
+		expect(box.height).toBe(19.25 * INCH);
+		expect(box.width / INCH).toBeCloseTo(24.6, 5);
 	});
 
 	it('gives each style defaults in the requested units', () => {

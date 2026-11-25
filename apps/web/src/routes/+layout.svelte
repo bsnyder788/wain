@@ -8,6 +8,7 @@
 
 	const links = $derived([
 		{ href: '/', label: 'Design' },
+		{ href: '/plan', label: 'Plan' },
 		{ href: '/settings', label: 'Settings' },
 		{ href: '/account', label: account.current.status === 'signed_in' ? 'Account' : 'Sign in' }
 	]);

@@ -5,6 +5,7 @@
 //! under `/api/v1`.
 
 pub mod auth;
+pub mod billing;
 pub mod config;
 pub mod credits;
 pub mod error;
@@ -38,6 +39,8 @@ pub struct AppState {
     pub mailer: Arc<dyn Mailer>,
     /// `None` when no AI provider is configured.
     pub suggester: Option<Arc<dyn Suggester>>,
+    /// `None` when the server is not set up to sell credits.
+    pub billing: Option<Arc<billing::Billing>>,
 }
 
 pub struct Settings {
@@ -54,6 +57,9 @@ pub fn app(state: AppState) -> Router {
             "/suggestions",
             post(suggest::create_suggestions).layer(DefaultBodyLimit::max(UPLOAD_LIMIT)),
         )
+        .route("/billing/packs", get(billing::packs))
+        .route("/billing/checkout", post(billing::checkout))
+        .route("/billing/webhook", post(billing::webhook))
         .merge(auth::routes())
         .layer(axum::middleware::from_fn(auth::same_origin));
 

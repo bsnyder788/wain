@@ -2,8 +2,13 @@
 	import { formatLength, type Length, type Plan, type Profile, type UnitPrefs } from '#lib/engine/index.ts';
 	import { endCuts, MATERIAL_NAMES, PART_NAMES } from '#lib/labels.ts';
 
-	type Props = { plan: Plan; units: UnitPrefs };
-	let { plan, units }: Props = $props();
+	type Props = {
+		plan: Plan;
+		units: UnitPrefs;
+		/** Adds a box to tick beside each line, for working from a printout. */
+		checklist?: boolean;
+	};
+	let { plan, units, checklist = false }: Props = $props();
 
 	const fmt = (length: Length) => formatLength(length, units);
 	// Lumber is sold by the foot, so stock lengths read better as 8' 0".
@@ -27,6 +32,7 @@
 						<th class="num">Length</th>
 						<th>Ends</th>
 						<th class="num">Qty</th>
+						{#if checklist}<th class="num">Cut</th>{/if}
 					</tr>
 				</thead>
 				<tbody>
@@ -38,6 +44,7 @@
 							<td class="num">{fmt(item.length)}</td>
 							<td>{endCuts(item.cuts)}</td>
 							<td class="num">{item.quantity}</td>
+							{#if checklist}<td class="num"><span class="tick"></span></td>{/if}
 						</tr>
 					{/each}
 				</tbody>
@@ -113,6 +120,21 @@
 	.num {
 		text-align: right;
 		font-variant-numeric: tabular-nums;
+	}
+	.tick {
+		display: inline-block;
+		width: 1em;
+		height: 1em;
+		border: 1px solid var(--line);
+		border-radius: 0.15em;
+		vertical-align: middle;
+	}
+	.tag,
+	.cut,
+	.offcut {
+		/* Keep the colours when printed; browsers drop backgrounds by default. */
+		print-color-adjust: exact;
+		-webkit-print-color-adjust: exact;
 	}
 	.tag {
 		display: inline-block;

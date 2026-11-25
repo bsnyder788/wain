@@ -14,6 +14,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 use wain_core::{Length, Project, StyleKind, UnitSystem};
 
+use crate::billing::{Billing, CheckoutRequest, Pack, Payments};
 use crate::mail::{BoxFuture, Mailer};
 use crate::suggest::{RawSuggestion, RawSuggestions, SuggestError, SuggestInput, Suggester};
 use crate::{AppState, Settings, app, credits};
@@ -101,6 +102,51 @@ struct Harness {
 }
 
 fn harness(db: PgPool, dev: bool, suggester: Option<Arc<dyn Suggester>>) -> Harness {
+    build(db, dev, suggester, None)
+}
+
+const WEBHOOK_SECRET: &[u8] = b"whsec_test_secret";
+
+/// Stands in for Stripe: hands back a fixed checkout URL and remembers where
+/// each checkout was told to send the browser afterwards.
+#[derive(Clone, Default)]
+struct RecordingPayments(Arc<Mutex<Vec<String>>>);
+
+impl Payments for RecordingPayments {
+    fn create_checkout<'a>(
+        &'a self,
+        request: &'a CheckoutRequest<'a>,
+    ) -> BoxFuture<'a, Result<String, String>> {
+        self.0.lock().unwrap().push(format!(
+            "{} {} {} -> {}",
+            request.email, request.pack.id, request.pack.credits, request.success_url
+        ));
+        Box::pin(async { Ok("https://checkout.test/session".to_owned()) })
+    }
+}
+
+/// A harness that sells one 25-credit pack.
+fn shop(db: PgPool) -> (Harness, RecordingPayments) {
+    let payments = RecordingPayments::default();
+    let billing = Billing {
+        packs: vec![Pack {
+            id: "price_25".into(),
+            credits: 25,
+            amount: 500,
+            currency: "usd".into(),
+        }],
+        payments: Box::new(payments.clone()),
+        webhook_secret: WEBHOOK_SECRET.to_vec(),
+    };
+    (build(db, false, None, Some(Arc::new(billing))), payments)
+}
+
+fn build(
+    db: PgPool,
+    dev: bool,
+    suggester: Option<Arc<dyn Suggester>>,
+    billing: Option<Arc<Billing>>,
+) -> Harness {
     let outbox = Arc::new(Outbox::default());
     let state = AppState {
         db: db.clone(),
@@ -110,6 +156,7 @@ fn harness(db: PgPool, dev: bool, suggester: Option<Arc<dyn Suggester>>) -> Harn
         }),
         mailer: outbox.clone(),
         suggester,
+        billing,
     };
     Harness {
         app: app(state),
@@ -184,6 +231,28 @@ impl Harness {
         self.get("/me", Some(session)).await.body["credits"]
             .as_i64()
             .unwrap()
+    }
+
+    /// Delivers a webhook signed as Stripe would sign it now.
+    async fn webhook(&self, event: &Value) -> Reply {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let body = event.to_string();
+        let signature = crate::billing::tests::sign(WEBHOOK_SECRET, body.as_bytes(), now);
+        self.webhook_signed(body, &signature).await
+    }
+
+    async fn webhook_signed(&self, body: String, signature: &str) -> Reply {
+        // Stripe is not a browser: no Origin and no cookie.
+        let request = Request::post("/api/v1/billing/webhook")
+            .header(HOST, "app.test")
+            .header(CONTENT_TYPE, "application/json")
+            .header("stripe-signature", signature)
+            .body(Body::from(body))
+            .unwrap();
+        self.send(request).await
     }
 
     async fn suggest(&self, project: &Project, image: &[u8], session: Option<&str>) -> Reply {
@@ -699,6 +768,188 @@ async fn suggestions_are_refused_before_any_charge_or_ai_call(db: PgPool) {
         unconfigured.credits(&session).await,
         i64::from(credits::SIGNUP_GRANT)
     );
+}
+
+// ---- Billing ----------------------------------------------------------------
+
+/// The event Stripe sends when a checkout finishes.
+fn checkout_completed(session_id: &str, user: Uuid, payment_status: &str) -> Value {
+    json!({
+        "id": "evt_test",
+        "type": "checkout.session.completed",
+        "data": { "object": {
+            "id": session_id,
+            "payment_status": payment_status,
+            "client_reference_id": user.to_string(),
+            "metadata": { "credits": "25" },
+            "amount_total": 500,
+            "currency": "usd",
+        } },
+    })
+}
+
+#[sqlx::test]
+async fn packs_are_listed_and_checkout_needs_an_account(db: PgPool) {
+    // A server that does not sell credits says so with an empty list.
+    let plain = harness(db.clone(), false, None);
+    assert_eq!(
+        plain.get("/billing/packs", None).await.body,
+        json!({ "packs": [] })
+    );
+    let session = plain.sign_in("grace@example.com").await;
+    let reply = plain
+        .post(
+            "/billing/checkout",
+            json!({ "pack": "price_25" }),
+            Some(&session),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::SERVICE_UNAVAILABLE);
+
+    let (h, payments) = shop(db);
+    let listed = h.get("/billing/packs", None).await;
+    assert_eq!(
+        listed.body,
+        json!({ "packs": [{ "id": "price_25", "credits": 25, "amount": 500, "currency": "usd" }] })
+    );
+
+    let reply = h
+        .post("/billing/checkout", json!({ "pack": "price_25" }), None)
+        .await;
+    assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+
+    let session = h.sign_in("ada@example.com").await;
+    let reply = h
+        .post(
+            "/billing/checkout",
+            json!({ "pack": "price_nope" }),
+            Some(&session),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+
+    let reply = h
+        .post(
+            "/billing/checkout",
+            json!({ "pack": "price_25" }),
+            Some(&session),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(
+        reply.body,
+        json!({ "url": "https://checkout.test/session" })
+    );
+    // The browser comes back to the site it started from.
+    assert_eq!(
+        *payments.0.lock().unwrap(),
+        ["ada@example.com price_25 25 -> https://app.test/account?purchase=success"]
+    );
+    // Starting a checkout grants nothing by itself.
+    assert_eq!(h.credits(&session).await, i64::from(credits::SIGNUP_GRANT));
+}
+
+#[sqlx::test]
+async fn a_paid_checkout_adds_the_credits_exactly_once(db: PgPool) {
+    let (h, _) = shop(db);
+    let session = h.sign_in("ada@example.com").await;
+    let user = user_id(&h.db).await;
+    let event = checkout_completed("cs_test_1", user, "paid");
+
+    let reply = h.webhook(&event).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(
+        h.credits(&session).await,
+        i64::from(credits::SIGNUP_GRANT) + 25
+    );
+
+    // Stripe delivers at least once; a repeat must not pay out again.
+    assert_eq!(h.webhook(&event).await.status, StatusCode::OK);
+    assert_eq!(
+        h.credits(&session).await,
+        i64::from(credits::SIGNUP_GRANT) + 25
+    );
+
+    // A second, separate purchase does.
+    h.webhook(&checkout_completed("cs_test_2", user, "paid"))
+        .await;
+    assert_eq!(
+        h.credits(&session).await,
+        i64::from(credits::SIGNUP_GRANT) + 50
+    );
+
+    let recorded: (i32, i64, String) =
+        sqlx::query_as("select credits, amount_total, currency from purchases where stripe_session_id = 'cs_test_1'")
+            .fetch_one(&h.db)
+            .await
+            .unwrap();
+    assert_eq!(recorded, (25, 500, "usd".to_owned()));
+}
+
+#[sqlx::test]
+async fn credits_wait_until_the_payment_has_cleared(db: PgPool) {
+    let (h, _) = shop(db);
+    let session = h.sign_in("ada@example.com").await;
+    let user = user_id(&h.db).await;
+
+    // A bank debit completes checkout before the money arrives.
+    let pending = checkout_completed("cs_slow", user, "unpaid");
+    assert_eq!(h.webhook(&pending).await.status, StatusCode::OK);
+    assert_eq!(h.credits(&session).await, i64::from(credits::SIGNUP_GRANT));
+
+    let mut cleared = checkout_completed("cs_slow", user, "paid");
+    cleared["type"] = json!("checkout.session.async_payment_succeeded");
+    assert_eq!(h.webhook(&cleared).await.status, StatusCode::OK);
+    assert_eq!(
+        h.credits(&session).await,
+        i64::from(credits::SIGNUP_GRANT) + 25
+    );
+}
+
+#[sqlx::test]
+async fn unsigned_or_unusable_webhooks_grant_nothing(db: PgPool) {
+    let (h, _) = shop(db);
+    let session = h.sign_in("ada@example.com").await;
+    let user = user_id(&h.db).await;
+    let event = checkout_completed("cs_forged", user, "paid");
+    let unchanged = i64::from(credits::SIGNUP_GRANT);
+
+    // No signature, a made-up one, and one made with the wrong secret.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let wrong_secret =
+        crate::billing::tests::sign(b"whsec_other", event.to_string().as_bytes(), now);
+    for signature in ["", "t=1,v1=00", wrong_secret.as_str()] {
+        let reply = h.webhook_signed(event.to_string(), signature).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{signature:?}");
+    }
+    // A real signature replayed long after it was made.
+    let stale =
+        crate::billing::tests::sign(WEBHOOK_SECRET, event.to_string().as_bytes(), now - 3600);
+    assert_eq!(
+        h.webhook_signed(event.to_string(), &stale).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(h.credits(&session).await, unchanged);
+
+    // Properly signed, but nothing we can act on. These are acknowledged so
+    // Stripe stops retrying, and change nothing.
+    let mut other_type = event.clone();
+    other_type["type"] = json!("customer.created");
+    let unknown_user = checkout_completed("cs_stranger", Uuid::new_v4(), "paid");
+    let mut no_credits = checkout_completed("cs_blank", user, "paid");
+    no_credits["data"]["object"]["metadata"] = json!({});
+    for odd in [other_type, unknown_user, no_credits] {
+        assert_eq!(h.webhook(&odd).await.status, StatusCode::OK, "{odd}");
+    }
+    assert_eq!(h.credits(&session).await, unchanged);
+    let purchases: i64 = sqlx::query_scalar("select count(*) from purchases")
+        .fetch_one(&h.db)
+        .await
+        .unwrap();
+    assert_eq!(purchases, 0);
 }
 
 // ---- Plan -------------------------------------------------------------------
