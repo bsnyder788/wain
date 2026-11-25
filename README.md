@@ -135,16 +135,42 @@ WebAssembly package, in well under a tenth of a second.
   found, so the app can say which corners are guesses.
 - **What is on the wall** (`find_obstructions`): the photo is redrawn as if
   the wall were seen square-on, at a known scale. Doors and windows are then
-  upright rectangles with edges on every side and plain wall around them;
-  outlets and switches are isolated blobs the size of a cover plate, told
-  apart by height. Sizes come out in the wall's own measurements.
+  rectangles whose sides lie on long straight edges that meet at the corners,
+  with plain wall around them. The edges are fitted lines, so they can be
+  faint (a white casing on a white wall), broken, or a few degrees off true,
+  as they are when the marked corners are slightly out. Outlets and switches
+  are isolated blobs the size of a cover plate, told apart by height. Sizes
+  come out in the wall's own measurements.
 - Both are guesses for the user to confirm. Corner shots of two walls and
-  cluttered rooms can throw the outline off; a framed picture can be offered
-  as a window; doors are found less reliably than windows and outlets.
-  Found sizes are rounded to 1/4" or 5 mm and are no substitute for a tape.
-- `crates/wain-vision/tests/scenes.rs` checks both against rooms it draws
-  itself, where the answer is known. For real photos there is a tool that
-  writes an annotated copy:
+  cluttered rooms can throw the outline off, and a framed picture can be
+  offered as a window. Found sizes are rounded to 1/4" or 5 mm and are no
+  substitute for a tape.
+
+### Checking it
+
+- `crates/wain-vision/tests/scenes.rs` runs both detectors on rooms it draws
+  itself, where the answer is known exactly.
+- `crates/wain-vision/eval/walls.txt` marks up 24 walls in 21 public photos
+  from Wikimedia Commons: where the wall is, and every door, window, outlet
+  and switch on it. The photos are not in the repository; a script fetches
+  them. Run this after any change to detection:
+
+  ```sh
+  scripts/fetch-eval-photos.sh
+  cargo run --release -p wain-vision --example evaluate -- score
+  ```
+
+  With the wall's corners given, it currently finds 10 of 12 doors, 9 of 10
+  windows and 22 of 28 cover plates, with 2 false finds, and places door and
+  window edges a median 17 mm from where they were marked. Most of those
+  walls were also used to tune it, so expect somewhat less on new photos.
+  Known misses: an arched door, a window cut off by the top of the photo,
+  plates touching clutter or a baseboard, and doors that fill a whole wall.
+- To mark up another photo, `evaluate grid` draws a grid over it for reading
+  off the corners and `evaluate view` squares the wall up with a millimetre
+  grid for reading off what is on it. `walls.txt` describes the format.
+- `examples/detect.rs` writes an annotated copy of any one photo, including
+  the wall outline:
 
   ```sh
   cargo run --release -p wain-vision --example detect -- room.jpg out.png 3600 2400

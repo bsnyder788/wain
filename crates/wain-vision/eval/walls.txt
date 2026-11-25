@@ -1,0 +1,164 @@
+# Walls in public photos, marked up by hand, for scoring `find_obstructions`.
+# See `examples/evaluate.rs`, which reads this file.
+#
+#   photo <id> <file name on Wikimedia Commons>
+#   wall <width mm> <height mm> <top-left> <top-right> <bottom-right> <bottom-left>
+#   <kind> <from left mm> <above floor mm> <width mm> <height mm>
+#
+# Corners are fractions of the photo's width and height, as x,y. A photo can
+# have more than one wall; each takes the lines that follow it. Kinds are
+# door, opening, window, outlet and switch, measured to the outside of the
+# casing or cover plate. `other` marks something that is neither expected nor
+# a mistake to find: furniture against the wall, a picture, a fireplace.
+#
+# The photos themselves are not kept here. `scripts/fetch-eval-photos.sh`
+# downloads each one from https://commons.wikimedia.org/wiki/File:<file name>,
+# where its author and licence are given.
+#
+# None of these rooms was measured. Where the ceiling is out of shot the
+# "wall" is the part in view, and sizes were worked out from things of known
+# size in the photo: cover plates, door leaves. Positions are good to about
+# 40 mm.
+#
+# The first eighteen photos were used to tune the detectors. The last three
+# (d096, c109, d154) and the second walls of d048 and d050 were marked up
+# afterwards as a check, though d096 has since informed a change too.
+
+photo c067 Bautuer.jpg
+wall 2414 2574 0,0 0.847,0 0.847,0.903 0,0.903
+door 852 0 1258 2444
+
+photo c110 Entrance to the restaurant. Magyar Király Hotel interior. Listed ID 3831 Zichy house, former Venice hotel. - 10, Fő St., Mátyás király Blvd., Downtown, Székesfehérvár, Fejér county, Hungary.JPG
+wall 3400 3950 0,0 1,0 1,0.885 0,0.85
+door 115 0 1657 2208
+other 2265 1674 453 361
+other 3320 1690 80 360
+other 3050 2330 350 460
+other 2160 0 1005 605
+other 2018 969 200 92
+other 1944 671 275 172
+other 2030 1250 260 80
+
+photo c111 Eteläesplanadi 12 - Kasarmikatu 27 - Helsinki 2014 - G27386 - hkm.HKMS000005-km0000n8gb.jpg
+wall 2000 3170 0,0 1,0 1,0.905 0,0.9
+door 258 0 995 2540
+switch 1396 995 83 162
+outlet 1396 267 83 120
+other 1380 2560 110 110
+
+photo d048 Apartment Room 2025-10-06 1.jpg
+wall 3850 2500 0.208,0.210 0.768,0.180 0.753,0.672 0.232,0.663
+window 650 590 940 1590
+window 1695 600 930 1570
+outlet 2272 350 65 105
+wall 2500 2500 0.768,0.18 1.0,0.01 1.0,0.93 0.753,0.672
+outlet 1386 205 65 103
+outlet 1505 205 70 103
+
+photo d049 Apartment Room 2025-10-12 1.jpg
+wall 3700 2440 0,0.12 1,-0.093 1,1.14 0,0.762
+door 2333 0 907 2151
+switch 1820 952 129 101
+outlet 800 295 62 113
+outlet 1128 295 62 113
+
+photo d050 Apartment Room 2025-10-12 2.jpg
+wall 4000 2700 0.221,0.120 0.793,0.123 0.771,0.613 0.246,0.625
+window 455 960 880 1475
+window 2305 960 880 1490
+outlet 675 435 72 117
+outlet 2905 435 72 117
+wall 2000 2900 0.793,0.123 1.0,0.01 1.0,0.803 0.771,0.613
+outlet 1352 357 70 113
+outlet 1714 357 70 113
+
+photo d051 Apartment Room 2025-10-12 3.jpg
+wall 2820 2700 0.058,0.132 0.417,0.073 0.422,0.675 0.08,0.63
+window 92 868 841 1453
+window 1036 847 867 1474
+window 1997 830 823 1490
+outlet 599 357 70 120
+wall 2890 2700 0.42,0.073 0.921,-0.008 0.874,0.762 0.42,0.712
+window 1163 863 705 1537
+outlet 649 365 70 114
+
+photo d052 Apartment Room 2026-02-09 1.jpg
+wall 3540 1800 0.028,0.083 1.002,0 0.883,0.884 0.111,0.594
+outlet 2211 242 69 123
+
+photo d097 Empty apartment in Berlin with white desk, chair and ladder 01.jpg
+wall 3560 2400 0.068,0 0.921,0 0.890,0.719 0.114,0.751
+opening 845 0 1236 2194
+switch 2767 1519 82 74
+switch 2760 1031 89 147
+other 2054 0 1506 800
+
+photo d101 Empty apartment room with extension cord.jpg
+wall 3250 2200 -0.085,0 0.795,0 0.752,0.718 0,0.71
+window 973 640 937 1560
+other 120 0 640 1030
+
+photo d119 Empty room in apartment.jpg
+wall 2970 2500 0.415,0.092 1.0,-0.074 1.0,0.858 0.428,0.641
+outlet 2142 324 68 114
+outlet 2381 329 71 120
+other 64 0 812 2110
+
+photo d129 Empty Wall in Living Room.jpg
+wall 2180 1672 0.227,0 0.908,0 0.860,0.789 0.242,0.766
+outlet 1012 203 70 115
+other 500 0 440 340
+other 0 0 370 300
+other 1370 0 515 60
+
+photo d187 Mostly Empty Living Room (30977076047).jpg
+wall 4650 2500 0.055,0.055 0.84,0.105 0.815,0.625 0.085,0.635
+outlet 2601 299 71 116
+other 3520 0 1100 1090
+other 0 0 300 2500
+
+photo d220 Riverside Plaza 2014-08-26 - apartment interior 1.jpg
+wall 3450 2400 0.007,0.110 0.684,0.187 0.666,0.793 0.025,0.889
+door 893 0 1048 2384
+other 650 0 245 2400
+
+photo c029 A end door and drains at a bathroom at a local peter pan's play area.jpg
+wall 2670 2090 0.136,0.103 1.024,-0.035 0.983,0.931 0.213,0.861
+door 45 0 910 2011
+switch 1086 1137 88 85
+other 1560 0 1110 2090
+
+photo e167 NMP 1780s House interior Bedroom 1 Door Closed Corner.JPG
+wall 6000 2400 0.054,0.209 1.0,0.034 1.0,0.911 0.071,0.628
+door 4422 0 861 2143
+switch 4284 1157 60 96
+other 1590 0 2590 810
+
+photo e168 NMP 1780s House interior Bedroom 1 Door Closed.JPG
+wall 2175 2335 0,0 1,0 1,0.80 0,0.795
+door 664 0 886 2007
+switch 555 1019 60 108
+other 0 0 630 650
+
+photo e185 Room with fireplace - after.jpg
+wall 4530 2200 0.10,0 0.937,0 0.891,0.560 0.105,0.530
+window 3101 731 954 1344
+outlet 609 261 75 119
+outlet 4294 141 70 107
+other 979 0 1810 1225
+
+photo d096 Empty apartment in Berlin with white desk, books and chair.jpg
+wall 3300 2490 0,-0.06 0.755,0.05 0.755,0.655 0,0.867
+opening 657 0 1266 2194
+switch 2575 1395 70 80
+other 1950 0 1350 1050
+
+photo c109 Enkhuizen, deur, Westerstraat 76.jpg
+wall 1260 2220 0.185,0.055 0.815,0.0 0.79,0.80 0.225,0.733
+door 113 0 1000 2150
+
+photo d154 HK Shatin 大圍 溱岸8號 Riverpark empty showflat living room Dec-2012.JPG
+wall 3600 2600 0.24,0.283 0.975,0.25 0.94,0.585 0.225,0.60
+door 1445 0 2040 2550
+outlet 920 200 145 70
+other 1300 1600 120 280

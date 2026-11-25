@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use wain_core::Point;
 
 use crate::Photo;
-use crate::lines::{Line, find_lines};
+use crate::lines::{Line, Search, find_lines};
 use crate::raster::{Gradient, Rgb};
 
 /// The photo is shrunk to this before looking for lines. Small enough that
@@ -116,7 +116,13 @@ pub(crate) fn trace(photo: &Photo) -> WallTrace {
     let gradient = Gradient::of(&image);
     let edges = gradient.thin(EDGE_THRESHOLD);
     let (w, h) = (image.w as f32, image.h as f32);
-    let lines = find_lines(&gradient, &edges, MIN_LINE * w.min(h), 80);
+    let search = Search {
+        min_votes: MIN_LINE * w.min(h),
+        limit: 80,
+        bridge: 3,
+        slant: None,
+    };
+    let lines = find_lines(&gradient, &edges, &search);
     let paint = Paint::of(&image);
 
     let fraction = |(x, y): (f32, f32)| Point::new((x / w) as f64, (y / h) as f64);

@@ -17,8 +17,6 @@ const FIRST_ANGLE: f32 = -45.0;
 const VOTE_SPREAD: isize = 6;
 /// An edge pixel belongs to a line when it is this close to it, in pixels.
 const NEAR: f32 = 1.6;
-/// Gaps in a line's support shorter than this are bridged, in pixels.
-const BRIDGE: usize = 3;
 
 /// A straight line, with a record of where along it the photo has an edge.
 ///
@@ -137,30 +135,112 @@ struct EdgePixel {
     steepness: f32,
 }
 
-/// The strongest lines in the image, best first. `min_votes` is the shortest
-/// supported length worth reporting and `limit` caps how many come back.
-pub(crate) fn find_lines(
-    gradient: &Gradient,
-    edges: &[bool],
-    min_votes: f32,
-    limit: usize,
-) -> Vec<Line> {
-    let (w, h) = (gradient.w, gradient.h);
-    let pixels: Vec<EdgePixel> = edges
-        .iter()
-        .enumerate()
-        .filter(|&(_, &on)| on)
-        .map(|(index, _)| {
-            let m = gradient.mag[index].max(1e-6);
-            EdgePixel {
-                x: (index % w) as f32,
-                y: (index / w) as f32,
-                gx: gradient.gx[index] / m,
-                gy: gradient.gy[index] / m,
-                steepness: m,
+/// The edge pixels of an image, indexed by row and by column so that the
+/// ones near a line can be found without looking at all of them.
+struct Edges {
+    w: usize,
+    h: usize,
+    /// In row order.
+    pixels: Vec<EdgePixel>,
+    /// Where each row starts in `pixels`, with one extra entry for the end.
+    row_starts: Vec<usize>,
+    /// Indices into `pixels`, one list for each column.
+    columns: Vec<Vec<u32>>,
+}
+
+impl Edges {
+    fn of(gradient: &Gradient, edges: &[bool]) -> Edges {
+        let (w, h) = (gradient.w, gradient.h);
+        let mut pixels = Vec::new();
+        let mut row_starts = Vec::with_capacity(h + 1);
+        let mut columns = vec![Vec::new(); w];
+        for y in 0..h {
+            row_starts.push(pixels.len());
+            for (x, column) in columns.iter_mut().enumerate() {
+                let index = y * w + x;
+                if !edges[index] {
+                    continue;
+                }
+                let m = gradient.mag[index].max(1e-6);
+                column.push(pixels.len() as u32);
+                pixels.push(EdgePixel {
+                    x: x as f32,
+                    y: y as f32,
+                    gx: gradient.gx[index] / m,
+                    gy: gradient.gy[index] / m,
+                    steepness: m,
+                });
             }
-        })
-        .collect();
+        }
+        row_starts.push(pixels.len());
+        Edges {
+            w,
+            h,
+            pixels,
+            row_starts,
+            columns,
+        }
+    }
+
+    /// Calls `visit` with every edge pixel that lies on the line and runs
+    /// the same way. Only the rows or columns the line passes through are
+    /// searched.
+    fn on_line(&self, line: &Line, reach: f32, mut visit: impl FnMut(&EdgePixel)) {
+        let mut check = |pixel: &EdgePixel| {
+            let distance = line.nx * pixel.x + line.ny * pixel.y - line.rho;
+            // Within about 25 degrees: faint edges have noisy directions.
+            if distance.abs() <= reach && (line.nx * pixel.gx + line.ny * pixel.gy).abs() > 0.9 {
+                visit(pixel);
+            }
+        };
+        let span = |a: f32, b: f32, size: usize| {
+            let lo = (a.min(b) - reach).floor().clamp(0.0, size as f32) as usize;
+            let hi = ((a.max(b) + reach).ceil() + 1.0).clamp(0.0, size as f32) as usize;
+            lo..hi.max(lo)
+        };
+        if line.nx.abs() >= line.ny.abs() {
+            for column in span(line.x_at(0.0), line.x_at(self.h as f32), self.w) {
+                for &index in &self.columns[column] {
+                    check(&self.pixels[index as usize]);
+                }
+            }
+        } else {
+            let rows = span(line.y_at(0.0), line.y_at(self.w as f32), self.h);
+            if !rows.is_empty() {
+                let range = self.row_starts[rows.start]..self.row_starts[rows.end];
+                self.pixels[range].iter().for_each(check);
+            }
+        }
+    }
+}
+
+/// What to look for in [`find_lines`].
+pub(crate) struct Search {
+    /// The shortest supported length worth reporting, in pixels.
+    pub min_votes: f32,
+    /// At most this many lines come back.
+    pub limit: usize,
+    /// Breaks in a line's support up to this long are bridged, in pixels.
+    pub bridge: usize,
+    /// Look only for lines within this many degrees of upright or level.
+    /// `None` looks at every angle.
+    pub slant: Option<f32>,
+}
+
+/// The strongest lines in the image, best first.
+pub(crate) fn find_lines(gradient: &Gradient, edges: &[bool], search: &Search) -> Vec<Line> {
+    let (w, h) = (gradient.w, gradient.h);
+    let (min_votes, limit) = (search.min_votes, search.limit);
+    let edges = Edges::of(gradient, edges);
+    let pixels = &edges.pixels;
+    // A table angle is the direction of a line's normal: 0 for an upright
+    // line, 90 for a level one.
+    let wanted = |bin: usize| {
+        let angle = FIRST_ANGLE + bin as f32;
+        search
+            .slant
+            .is_none_or(|slant| angle.abs() <= slant || (angle - 90.0).abs() <= slant)
+    };
 
     let diagonal = ((w * w + h * h) as f32).sqrt().ceil() as usize;
     let rho_bins = 2 * diagonal + 1;
@@ -172,7 +252,7 @@ pub(crate) fn find_lines(
         .collect();
 
     let mut votes = vec![0u16; ANGLE_BINS * rho_bins];
-    for pixel in &pixels {
+    for pixel in pixels {
         // The gradient is the line's normal. Normals half a turn apart are
         // the same line, so fold the angle into the table's range.
         let mut angle = pixel.gy.atan2(pixel.gx).to_degrees();
@@ -185,7 +265,7 @@ pub(crate) fn find_lines(
         for offset in -VOTE_SPREAD..=VOTE_SPREAD {
             let bin = centre + offset;
             // Votes that would wrap land on diagonals, which are not used.
-            if bin < 0 || bin >= ANGLE_BINS as isize {
+            if bin < 0 || bin >= ANGLE_BINS as isize || !wanted(bin as usize) {
                 continue;
             }
             let (cos, sin) = trig[bin as usize];
@@ -236,7 +316,7 @@ pub(crate) fn find_lines(
     for (_, bin, rho) in peaks {
         let (cos, sin) = trig[bin];
         let rough = Line::bare(cos, sin, rho as f32 - diagonal as f32);
-        let Some(line) = refine(&rough, &pixels, w, h) else {
+        let Some(line) = refine(&rough, &edges, search.bridge) else {
             continue;
         };
         if line.strength < min_votes {
@@ -269,14 +349,15 @@ fn same_line(a: &Line, b: &Line, w: usize, h: usize) -> bool {
 
 /// Fits the line to the edge pixels that lie on it, then records where
 /// along its length those pixels are.
-fn refine(rough: &Line, pixels: &[EdgePixel], w: usize, h: usize) -> Option<Line> {
+fn refine(rough: &Line, edges: &Edges, bridge: usize) -> Option<Line> {
+    let (w, h) = (edges.w, edges.h);
     let mut line = rough.clone();
     // The first pass reaches a little wider, since the peak is only good to
     // a degree and a pixel.
     for reach in [NEAR * 1.6, NEAR, NEAR] {
         let (mut n, mut sx, mut sy) = (0.0f64, 0.0f64, 0.0f64);
         let (mut sxx, mut sxy, mut syy) = (0.0f64, 0.0f64, 0.0f64);
-        for pixel in pixels.iter().filter(|p| on_line(&line, p, reach)) {
+        edges.on_line(&line, reach, |pixel| {
             let (x, y) = (pixel.x as f64, pixel.y as f64);
             n += 1.0;
             sx += x;
@@ -284,7 +365,7 @@ fn refine(rough: &Line, pixels: &[EdgePixel], w: usize, h: usize) -> Option<Line
             sxx += x * x;
             sxy += x * y;
             syy += y * y;
-        }
+        });
         if n < 8.0 {
             return None;
         }
@@ -316,14 +397,14 @@ fn refine(rough: &Line, pixels: &[EdgePixel], w: usize, h: usize) -> Option<Line
     let bins = (t1 - t0) as usize + 1;
     let mut on = vec![false; bins];
     let (mut steepness, mut count) = (0.0, 0.0);
-    for pixel in pixels.iter().filter(|p| on_line(&line, p, NEAR)) {
+    edges.on_line(&line, NEAR, |pixel| {
         let bin = (line.t_of(pixel.x, pixel.y) - t0).round() as usize;
         on[bin.min(bins - 1)] = true;
         steepness += pixel.steepness;
         count += 1.0;
-    }
+    });
     line.contrast = if count > 0.0 { steepness / count } else { 0.0 };
-    bridge_gaps(&mut on);
+    bridge_gaps(&mut on, bridge);
 
     let mut cumulative = Vec::with_capacity(bins + 1);
     let mut total = 0u32;
@@ -338,15 +419,8 @@ fn refine(rough: &Line, pixels: &[EdgePixel], w: usize, h: usize) -> Option<Line
     Some(line)
 }
 
-/// Whether an edge pixel lies on the line and runs the same way.
-fn on_line(line: &Line, pixel: &EdgePixel, reach: f32) -> bool {
-    let distance = line.nx * pixel.x + line.ny * pixel.y - line.rho;
-    // Within about 25 degrees: faint edges have noisy directions.
-    distance.abs() <= reach && (line.nx * pixel.gx + line.ny * pixel.gy).abs() > 0.9
-}
-
-/// Fills short gaps between supported bins.
-fn bridge_gaps(on: &mut [bool]) {
+/// Fills gaps of up to `bridge` bins between supported bins.
+fn bridge_gaps(on: &mut [bool], bridge: usize) {
     let mut last_on: Option<usize> = None;
     for index in 0..on.len() {
         if !on[index] {
@@ -354,7 +428,7 @@ fn bridge_gaps(on: &mut [bool]) {
         }
         if let Some(last) = last_on
             && index - last > 1
-            && index - last <= BRIDGE + 1
+            && index - last <= bridge + 1
         {
             on[last + 1..index].iter_mut().for_each(|bin| *bin = true);
         }

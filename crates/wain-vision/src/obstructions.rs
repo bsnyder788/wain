@@ -3,12 +3,13 @@
 //!
 //! The photo is first redrawn as if the wall were seen square-on, at a known
 //! number of millimetres per pixel. In that view everything of interest is
-//! an upright rectangle of a predictable size, which is what makes simple
-//! image processing good enough:
+//! a rectangle of a predictable size, which is what makes simple image
+//! processing good enough:
 //!
 //! - Doors and windows are rectangles whose sides lie on long straight
-//!   edges, with plain wall just outside them and something that is not
-//!   plain wall inside.
+//!   edges that meet at the corners, with plain wall just outside them and
+//!   something that is not plain wall inside. The edges are found as fitted
+//!   lines, so they may be faint, broken or a few degrees off true.
 //! - Outlets and switches are small isolated blobs the size of a cover
 //!   plate, told apart by how high they sit.
 //!
@@ -18,10 +19,13 @@
 //!
 //! Anything rectangular fits the description, so a framed picture can come
 //! back as a window. The results are suggestions for the user to confirm.
+//! `examples/evaluate.rs` scores them against marked-up photos; run it
+//! after any change here.
 
 use wain_core::{Homography, Length, Obstruction, ObstructionKind, Point, Rect};
 
 use crate::Photo;
+use crate::lines::{Line, Search, find_lines};
 use crate::raster::{Gradient, Rgb};
 
 /// The longer side of the squared-up view, in pixels.
@@ -38,9 +42,15 @@ const SAME_WALL: f32 = 45.0;
 /// Share of the last fifth of each side, at each corner, that must lie on
 /// an edge.
 const CORNER: f32 = 0.4;
-/// Sides are matched to edges within this many pixels, since the corners
-/// the view was squared up from are never quite exact.
-const SLACK: usize = 2;
+/// Share of a plate's bounding box that lies between the first and last
+/// edge on its row or in its column.
+const SOLID: f32 = 0.7;
+/// The sides of a door or window can be this many degrees off upright or
+/// level in the squared-up view.
+const SLANT: f32 = 4.0;
+/// A long straight edge counts as a side when it is this fraction as strong
+/// as the weakest edge that counts on its own.
+const FAINT: f32 = 0.6;
 
 /// Sizes below are in millimetres on the wall.
 mod mm {
@@ -55,9 +65,9 @@ mod mm {
     pub const MIN_DOOR_HEIGHT: f64 = 1700.0;
     pub const MIN_DOOR_WIDTH: f64 = 550.0;
     pub const MAX_DOOR_WIDTH: f64 = 2000.0;
-    /// Something that reaches this close to the ceiling is part of the
-    /// room, not a door.
-    pub const CEILING_REACH: f64 = 120.0;
+    /// An edge that runs on this far past both corners of a rectangle is
+    /// not that rectangle's own side.
+    pub const THROUGH: f64 = 150.0;
     /// The band just outside a rectangle that must be plain wall.
     pub const CLEAR_BAND: f64 = 50.0;
     pub const CLEAR_OFFSET: f64 = 15.0;
@@ -67,12 +77,17 @@ mod mm {
 
     /// Cover plates, from a single one to three in a row: US, European
     /// and British, with room for the wall's size being a little out.
-    pub const PLATE_WIDTH: std::ops::RangeInclusive<f64> = 50.0..=210.0;
-    pub const PLATE_HEIGHT: std::ops::RangeInclusive<f64> = 55.0..=160.0;
-    /// Outlets sit low on the wall and switches at hand height.
-    pub const OUTLET_CENTRE: std::ops::RangeInclusive<f64> = 150.0..=750.0;
-    pub const SWITCH_CENTRE: std::ops::RangeInclusive<f64> = 900.0..=1500.0;
+    pub const PLATE_WIDTH: std::ops::RangeInclusive<f64> = 45.0..=210.0;
+    pub const PLATE_HEIGHT: std::ops::RangeInclusive<f64> = 55.0..=180.0;
+    /// Outlets sit low on the wall. Switches are at hand height, and
+    /// thermostats and the like a little above that.
+    pub const OUTLET_CENTRE: std::ops::Range<f64> = 100.0..800.0;
+    pub const SWITCH_CENTRE: std::ops::RangeInclusive<f64> = 800.0..=1650.0;
     pub const PLATE_RING: f64 = 35.0;
+    /// An edge shorter than this is a speck of texture, not part of a plate.
+    pub const SPECK: f64 = 12.0;
+    /// Pieces of a plate's outline this far apart are joined up.
+    pub const PLATE_JOIN: f64 = 8.0;
 }
 
 /// A rectangle in the squared-up view, in pixels. `x1` and `y1` are one
@@ -132,7 +147,6 @@ pub(crate) fn find(
         gradient: &gradient,
         threshold,
         busy: Sums::of(w, h, &edges),
-        edges: &edges,
         colour: Means::of(&view.image),
     };
     let openings = find_openings(&scene);
@@ -264,8 +278,7 @@ struct Scene<'a> {
     gradient: &'a Gradient,
     /// Weakest edge that counts on this wall.
     threshold: f32,
-    /// The crest of every edge, of any direction, and counts of them.
-    edges: &'a [bool],
+    /// Counts of the pixels on the crest of an edge, of any direction.
     busy: Sums,
     colour: Means,
 }
@@ -375,221 +388,236 @@ impl Sums {
     }
 }
 
-/// A straight run of edge along one column or row: its position across,
-/// and where it starts and stops along.
-#[derive(Clone, Copy, Debug)]
-struct Run {
-    at: usize,
-    from: usize,
-    to: usize,
+/// A level line and where it crosses the two uprights being tried, left
+/// and right.
+type Cap<'a> = (&'a Line, (f32, f32), (f32, f32));
+
+/// Share of a line between two points on it that lies on an edge.
+fn share(line: &Line, from: (f32, f32), to: (f32, f32)) -> f32 {
+    let (a, b) = (line.t_of(from.0, from.1), line.t_of(to.0, to.1));
+    let length = (b - a).abs();
+    if length < 1.0 {
+        return 0.0;
+    }
+    (line.supported(a, b) / length).min(1.0)
 }
 
-impl Run {
-    fn len(&self) -> usize {
-        self.to - self.from
-    }
+/// As [`share`], for the first `length` pixels going from one point toward
+/// another. A negative length looks the other way: at what lies on the line
+/// before `from`.
+fn share_from(line: &Line, from: (f32, f32), toward: (f32, f32), length: f32) -> f32 {
+    let (a, b) = (line.t_of(from.0, from.1), line.t_of(toward.0, toward.1));
+    let end = a + (b - a).signum() * length;
+    (line.supported(a, end) / length.abs()).min(1.0)
 }
 
 /// Finds the rectangles that look like doors and windows.
+///
+/// Their sides are looked for among the long straight edges in the view,
+/// found the same way the wall's own outline is. Those need not be exactly
+/// upright or level: the corners the view was squared up from are never
+/// quite right, and neither are old houses.
 fn find_openings(scene: &Scene) -> Vec<(Box, ObstructionKind)> {
     let (view, gradient) = (scene.view, scene.gradient);
     let (w, h) = (view.image.w, view.image.h);
-    let px = |millimetres: f64| (millimetres / view.scale).round().max(1.0) as usize;
+    let px = |millimetres: f64| (millimetres / view.scale).max(1.0) as f32;
 
-    // Upright edges change brightness going across; level ones going down.
-    let mut upright = vec![false; w * h];
-    let mut level = vec![false; w * h];
-    for index in 0..w * h {
-        let (gx, gy) = (gradient.gx[index].abs(), gradient.gy[index].abs());
-        upright[index] = scene.edges[index] && gx >= 1.5 * gy;
-        level[index] = scene.edges[index] && gy >= 1.5 * gx;
+    // A long edge can be fainter than a short one and still be believed,
+    // which is what finds a white casing on a white wall.
+    let mut faint = gradient.thin(scene.threshold * FAINT);
+    for (edge, &seen) in faint.iter_mut().zip(&view.seen) {
+        *edge &= seen;
     }
-    // Widen each edge a little either side, so a line that is slightly off
-    // straight still reads as one run.
-    let widen = |mask: &[bool], across_x: bool| -> Vec<bool> {
-        let mut out = mask.to_vec();
-        for y in 0..h {
-            for x in 0..w {
-                if !mask[y * w + x] {
-                    continue;
-                }
-                if across_x {
-                    for near in x.saturating_sub(SLACK)..=(x + SLACK).min(w - 1) {
-                        out[y * w + near] = true;
-                    }
-                } else {
-                    for near in y.saturating_sub(SLACK)..=(y + SLACK).min(h - 1) {
-                        out[near * w + x] = true;
-                    }
-                }
-            }
-        }
-        out
+    let search = Search {
+        min_votes: px(mm::MIN_SIDE) * 0.8,
+        limit: 120,
+        bridge: px(mm::GAP) as usize,
+        slant: Some(SLANT),
     };
-    let upright = widen(&upright, true);
-    let level = widen(&level, false);
-    let upright_sums = Sums::of(w, h, &upright);
-    let level_sums = Sums::of(w, h, &level);
+    let lines = find_lines(gradient, &faint, &search);
+    let middle = (w as f32 / 2.0, h as f32 / 2.0);
+    let mut uprights: Vec<&Line> = lines
+        .iter()
+        .filter(|line| line.lean_from_vertical() <= SLANT + 1.0)
+        .collect();
+    uprights.sort_by(|a, b| a.x_at(middle.1).total_cmp(&b.x_at(middle.1)));
+    let mut levels: Vec<&Line> = lines
+        .iter()
+        .filter(|line| line.slope_from_horizontal() <= SLANT + 1.0)
+        .collect();
+    levels.sort_by(|a, b| a.y_at(middle.0).total_cmp(&b.y_at(middle.0)));
+    // The floor is always a possible bottom.
+    let floor = Line::bare(0.0, 1.0, h as f32);
+    levels.push(&floor);
 
-    let min_side = px(mm::MIN_SIDE);
-    let gap = px(mm::GAP);
-    let uprights = thin_runs(
-        (0..w)
-            .flat_map(|x| runs((0..h).map(|y| upright[y * w + x]), gap, min_side, x))
-            .collect(),
-    );
-    let levels = thin_runs(
-        (0..h)
-            .flat_map(|y| runs((0..w).map(|x| level[y * w + x]), gap, min_side, y))
-            .collect(),
-    );
-
-    // Share of a side that lies on an edge.
-    let side_upright = |x: usize, y0: usize, y1: usize| {
-        upright_sums.share(&Box {
-            x0: x,
-            x1: x + 1,
-            y0,
-            y1,
-        })
-    };
-    let side_level = |y: usize, x0: usize, x1: usize| {
-        level_sums.share(&Box {
-            x0,
-            x1,
-            y0: y,
-            y1: y + 1,
-        })
-    };
-
-    let band = px(mm::CLEAR_BAND);
-    let wall_end = px(mm::WALL_END);
-    let offset = px(mm::CLEAR_OFFSET);
+    let band = px(mm::CLEAR_BAND) as usize;
+    let wall_end = px(mm::WALL_END) as usize;
+    let offset = px(mm::CLEAR_OFFSET) as usize;
     let floor_reach = px(mm::FLOOR_REACH);
     let min_opening = px(mm::MIN_OPENING);
     let max_width = px(mm::MAX_OPENING_WIDTH);
-
+    let through = px(mm::THROUGH);
     let door_width = px(mm::MIN_DOOR_WIDTH)..=px(mm::MAX_DOOR_WIDTH);
-    let (door_height, ceiling_reach) = (px(mm::MIN_DOOR_HEIGHT), px(mm::CEILING_REACH));
+    let door_height = px(mm::MIN_DOOR_HEIGHT);
+    let met = |share: f32| share >= CORNER;
+
     let mut candidates: Vec<(f32, Box, ObstructionKind)> = Vec::new();
     for (index, left) in uprights.iter().enumerate() {
         for right in &uprights[index + 1..] {
-            let (left, right) = if left.at <= right.at {
-                (left, right)
-            } else {
-                (right, left)
-            };
-            let width = right.at - left.at;
+            let width = right.x_at(middle.1) - left.x_at(middle.1);
             if width < min_opening || width > max_width {
                 continue;
             }
+            let (Some(floor_left), Some(floor_right)) =
+                (left.intersect(&floor), right.intersect(&floor))
+            else {
+                continue;
+            };
             // Level edges across a good part of the gap are possible tops
             // and bottoms. (A pair of windows side by side has a top in two
-            // pieces.) The floor is always a possible bottom.
-            let mut caps: Vec<usize> = levels
+            // pieces.)
+            let caps: Vec<Cap> = levels
                 .iter()
-                .filter(|run| {
-                    let covered = run.to.min(right.at).saturating_sub(run.from.max(left.at));
-                    covered * 10 >= width * 3
+                .filter_map(|&level| {
+                    let (a, b) = (left.intersect(level)?, right.intersect(level)?);
+                    (level.is_bare() || share(level, a, b) >= 0.3).then_some((level, a, b))
                 })
-                .map(|run| run.at)
                 .collect();
-            caps.sort_unstable();
-            caps.dedup();
-            caps.push(h);
-            for (cap_index, &top) in caps.iter().enumerate() {
-                for &bottom in &caps[cap_index + 1..] {
-                    let (top, bottom) = if top <= bottom {
-                        (top, bottom)
-                    } else {
-                        (bottom, top)
+            for (cap_index, &(top, tl, tr)) in caps.iter().enumerate() {
+                if top.is_bare() {
+                    continue;
+                }
+                let top_y = (tl.1 + tr.1) / 2.0;
+                let top_share = share(top, tl, tr);
+                // A line that carries on well past both corners is not the
+                // top of this: it is a ceiling line, a picture rail or the
+                // top of a tiled dado running through. At the end of the
+                // wall there is no telling, so the worst is assumed.
+                let at_wall_end = |x: f32| x <= wall_end as f32 || x >= (w - wall_end) as f32;
+                let runs_on = |line: &Line, a: (f32, f32), b: (f32, f32)| {
+                    let past = |from: (f32, f32), toward: (f32, f32)| {
+                        at_wall_end(from.0) || share_from(line, from, toward, -through) >= 0.7
                     };
-                    if bottom - top < min_opening || top >= h {
+                    past(a, b) && past(b, a)
+                };
+                if top_share < 0.6 || runs_on(top, tl, tr) {
+                    continue;
+                }
+                for &(bottom, bl, br) in &caps[cap_index + 1..] {
+                    let bottom_y = (bl.1 + br.1) / 2.0;
+                    let height = bottom_y - top_y;
+                    if height < min_opening {
                         continue;
                     }
                     // Something standing on the floor is a door if it is
-                    // the size of one and stops short of the ceiling. If
-                    // not, it is furniture or a part of the room.
-                    let on_floor = h - bottom <= floor_reach;
+                    // the size of one. If not, it is furniture or a part of
+                    // the room.
+                    let on_floor = h as f32 - bottom_y <= floor_reach;
                     let kind = if !on_floor {
                         ObstructionKind::Window
-                    } else if door_width.contains(&width)
-                        && h - top >= door_height
-                        && top > ceiling_reach
-                    {
+                    } else if !bottom.is_bare() {
+                        // The floor itself stands in for anything this low.
+                        continue;
+                    } else if door_width.contains(&width) && h as f32 - top_y >= door_height {
                         ObstructionKind::Door
                     } else {
                         continue;
                     };
-                    let rect = Box {
-                        x0: left.at,
-                        x1: right.at + 1,
-                        y0: top,
-                        y1: if on_floor { h } else { bottom + 1 },
-                    };
-                    let sides = [
-                        side_upright(left.at, top, bottom.min(h)),
-                        side_upright(right.at, top, bottom.min(h)),
-                        side_level(top, left.at, right.at),
-                    ];
-                    let base = if on_floor {
-                        1.0
+                    let (bl, br) = if on_floor {
+                        (floor_left, floor_right)
                     } else {
-                        side_level(bottom, left.at, right.at)
+                        (bl, br)
                     };
+                    let sides = [share(left, tl, bl), share(right, tr, br), top_share];
+                    let base = if on_floor { 1.0 } else { share(bottom, bl, br) };
                     if sides.iter().any(|&share| share < 0.6) || base < 0.6 {
+                        continue;
+                    }
+                    if !on_floor && runs_on(bottom, bl, br) {
                         continue;
                     }
                     // The sides must reach the corners. Without this, the
                     // side of a window stretched up to the ceiling line
-                    // still looks mostly covered.
-                    let reach = |length: usize| (length / 5).max(4);
-                    let (tall, wide) = (reach(bottom.min(h) - top), reach(width));
-                    let met = |share: f32| share >= CORNER;
-                    let meets_top = [left.at, right.at]
-                        .iter()
-                        .all(|&x| met(side_upright(x, top, top + tall)))
-                        && met(side_level(top, left.at, left.at + wide))
-                        && met(side_level(top, right.at - wide, right.at));
+                    // still looks mostly covered. One whole corner at the
+                    // top is enough, an upright and a level edge meeting:
+                    // the other is often painted over, in shadow or behind
+                    // a curtain.
+                    let (tall, wide) = ((height / 5.0).max(4.0), (width / 5.0).max(4.0));
+                    let top_left =
+                        met(share_from(left, tl, bl, tall)) && met(share_from(top, tl, tr, wide));
+                    let top_right =
+                        met(share_from(right, tr, br, tall)) && met(share_from(top, tr, tl, wide));
+                    // A side at the very end of the wall is on the room's
+                    // own corner, which is an edge whether or not anything
+                    // stands there. Its top corner has to be seen.
+                    let meets_top = (top_left || top_right)
+                        && (top_left || !at_wall_end(tl.0))
+                        && (top_right || !at_wall_end(tr.0));
                     // A door's casing runs down to the floor, give or take
                     // the baseboard, where a window's sides stop at its
                     // sill. One side is enough: the other is often lost
                     // against the baseboard or behind something.
                     let meets_bottom = if on_floor {
-                        let low = h.saturating_sub(floor_reach);
-                        [left.at, right.at]
-                            .iter()
-                            .any(|&x| met(side_upright(x, low.saturating_sub(tall), low)))
+                        let above_base = |line: &Line, floor: (f32, f32), up: (f32, f32)| {
+                            let start = line.t_of(floor.0, floor.1);
+                            let sense = (line.t_of(up.0, up.1) - start).signum();
+                            let from = start + sense * floor_reach;
+                            line.supported(from, from + sense * tall) / tall
+                        };
+                        met(above_base(left, bl, tl)) || met(above_base(right, br, tr))
                     } else {
-                        [left.at, right.at]
-                            .iter()
-                            .all(|&x| met(side_upright(x, bottom - tall, bottom)))
-                            && met(side_level(bottom, left.at, left.at + wide))
-                            && met(side_level(bottom, right.at - wide, right.at))
+                        (met(share_from(left, bl, tl, tall))
+                            && met(share_from(bottom, bl, br, wide)))
+                            || (met(share_from(right, br, tr, tall))
+                                && met(share_from(bottom, br, bl, wide)))
                     };
                     if !(meets_top && meets_bottom) {
                         continue;
                     }
                     let outline = (sides.iter().sum::<f32>() + base) / 4.0;
 
+                    // The upright box nearest to the four corners.
+                    let edge = |a: f32, b: f32, size: usize| {
+                        ((a + b) / 2.0).round().clamp(0.0, size as f32) as usize
+                    };
+                    let rect = Box {
+                        x0: edge(tl.0, bl.0, w),
+                        x1: edge(tr.0, br.0, w),
+                        y0: edge(tl.1, tr.1, h),
+                        y1: if on_floor { h } else { edge(bl.1, br.1, h) },
+                    };
+                    if rect.x1 <= rect.x0 + 2 || rect.y1 <= rect.y0 + 2 {
+                        continue;
+                    }
+
                     // Plain wall just outside, on every side but the floor:
-                    // a band with next to no edges in it.
-                    // A door or window hard against the end of the wall has
-                    // the room's corner beside it instead, so that side is
-                    // not held to this.
+                    // a band with next to no edges in it. A door or window
+                    // hard against the end of the wall has the room's
+                    // corner beside it instead, so that side is not held to
+                    // this.
+                    // Beside a door only the upper part is looked at:
+                    // furniture stands against the wall lower down.
+                    let beside = Box {
+                        y1: if on_floor {
+                            rect.y0 + (rect.y1 - rect.y0) * 9 / 20
+                        } else {
+                            rect.y1
+                        },
+                        ..rect
+                    };
                     let mut bands = Vec::with_capacity(4);
                     if rect.x0 > wall_end {
                         bands.push(Box {
                             x0: rect.x0.saturating_sub(offset + band),
                             x1: rect.x0.saturating_sub(offset),
-                            ..rect
+                            ..beside
                         });
                     }
                     if rect.x1 + wall_end < w {
                         bands.push(Box {
                             x0: rect.x1 + offset,
                             x1: (rect.x1 + offset + band).min(w),
-                            ..rect
+                            ..beside
                         });
                     }
                     bands.push(Box {
@@ -683,115 +711,246 @@ fn find_openings(scene: &Scene) -> Vec<(Box, ObstructionKind)> {
         .collect()
 }
 
-/// Runs of set cells at least `min` long, bridging breaks of up to `gap`.
-fn runs(cells: impl Iterator<Item = bool>, gap: usize, min: usize, at: usize) -> Vec<Run> {
-    let mut out = Vec::new();
-    let mut current: Option<(usize, usize)> = None;
-    for (index, on) in cells.enumerate() {
-        if !on {
-            continue;
-        }
-        current = match current {
-            Some((from, to)) if index - to <= gap => Some((from, index + 1)),
-            Some((from, to)) => {
-                if to - from >= min {
-                    out.push(Run { at, from, to });
-                }
-                Some((index, index + 1))
-            }
-            None => Some((index, index + 1)),
-        };
-    }
-    if let Some((from, to)) = current
-        && to - from >= min
-    {
-        out.push(Run { at, from, to });
-    }
-    out
-}
-
-/// An edge a few pixels thick gives a run in each of several neighbouring
-/// columns. Keeps the longest of each such cluster.
-fn thin_runs(mut all: Vec<Run>) -> Vec<Run> {
-    all.sort_by_key(|run| std::cmp::Reverse(run.len()));
-    let mut kept: Vec<Run> = Vec::new();
-    for run in all {
-        let shadowed = kept.iter().any(|other| {
-            run.at.abs_diff(other.at) <= 2 * SLACK + 1 && run.from < other.to && other.from < run.to
-        });
-        if !shadowed {
-            kept.push(run);
-        }
-    }
-    // Enough for any real wall, and it bounds the search.
-    kept.truncate(60);
-    kept
-}
-
 /// Finds small isolated blobs the size of a cover plate.
 fn find_plates(scene: &Scene, openings: &[Box]) -> Vec<Box> {
     let (view, gradient) = (scene.view, scene.gradient);
     let (w, h) = (view.image.w, view.image.h);
-    let px = |millimetres: f64| millimetres / view.scale;
+    let px = |millimetres: f64| (millimetres / view.scale).round().max(1.0) as usize;
 
     // A plate shows up as a knot of edges: its outline, and the slots or
     // rockers inside it. The full width of each edge is used here, not just
-    // its crest, so that a small plate reads as one solid blob.
-    let mask: Vec<bool> = (0..w * h)
+    // its crest, so that the pieces of a small plate join up.
+    let mut mask: Vec<bool> = (0..w * h)
         .map(|index| view.seen[index] && gradient.mag[index] >= scene.threshold)
         .collect();
+
+    // Anything that runs on further than a plate is wide is not part of
+    // one: the top of a baseboard, a door casing, the edge of a tiled dado.
+    // Taking those away first frees a plate that sits against one.
+    let too_long = px(*mm::PLATE_WIDTH.end() + 40.0);
+    let mut long = vec![false; w * h];
+    let mut clear_runs = |cells: &mut dyn Iterator<Item = usize>| {
+        let mut run: Vec<usize> = Vec::new();
+        let mut flush = |run: &mut Vec<usize>| {
+            if run.len() > too_long {
+                run.iter().for_each(|&index| long[index] = true);
+            }
+            run.clear();
+        };
+        for index in cells {
+            if mask[index] {
+                run.push(index);
+            } else {
+                flush(&mut run);
+            }
+        }
+        flush(&mut run);
+    };
+    for y in 0..h {
+        clear_runs(&mut (0..w).map(|x| y * w + x));
+    }
+    for x in 0..w {
+        clear_runs(&mut (0..h).map(|y| y * w + x));
+    }
+    for (cell, &long) in mask.iter_mut().zip(&long) {
+        *cell &= !long;
+    }
+    // Nor is a speck: rough plaster is covered in them, and joined to a
+    // plate they would make it look bigger than it is.
+    let speck = px(mm::SPECK);
+    let mut seen_piece = vec![false; w * h];
+    let mut piece = Vec::new();
+    for start in 0..w * h {
+        if !mask[start] || seen_piece[start] {
+            continue;
+        }
+        piece.clear();
+        piece.push(start);
+        seen_piece[start] = true;
+        let mut next = 0;
+        while next < piece.len() {
+            let (x, y) = (piece[next] % w, piece[next] / w);
+            next += 1;
+            for ny in y.saturating_sub(1)..=(y + 1).min(h - 1) {
+                for nx in x.saturating_sub(1)..=(x + 1).min(w - 1) {
+                    let index = ny * w + nx;
+                    if mask[index] && !seen_piece[index] {
+                        seen_piece[index] = true;
+                        piece.push(index);
+                    }
+                }
+            }
+        }
+        let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
+        for &index in &piece {
+            let (x, y) = (index % w, index / w);
+            (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+        }
+        if (x1 - x0).max(y1 - y0) < speck {
+            piece.iter().for_each(|&index| mask[index] = false);
+        }
+    }
     let busy = Sums::of(w, h, &mask);
 
-    let ring = px(mm::PLATE_RING).round().max(2.0) as usize;
-    let mut plates = Vec::new();
+    // The outline of a pale plate on a pale wall comes out in pieces, with
+    // the sides fainter than the top and bottom. Pieces this close together
+    // are taken as one thing.
+    let join = px(mm::PLATE_JOIN);
+    let mut joined = vec![false; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            if mask[y * w + x] {
+                for ny in y.saturating_sub(join)..=(y + join).min(h - 1) {
+                    for nx in x.saturating_sub(join)..=(x + join).min(w - 1) {
+                        joined[ny * w + nx] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    let ring = px(mm::PLATE_RING).max(2);
+    // An edge is drawn about this much wider than the thing it surrounds.
+    const HALO: usize = 1;
+    // Blobs of the right size and shape, before asking what is around them.
+    let mut shaped: Vec<Box> = Vec::new();
+    // Blobs as wide as a plate but not as tall: possibly half of one.
+    let mut halves: Vec<Box> = Vec::new();
     let mut visited = vec![false; w * h];
     let mut stack = Vec::new();
     for start in 0..w * h {
-        if !mask[start] || visited[start] {
+        if !joined[start] || visited[start] {
             continue;
         }
-        // Flood fill one blob, tracking its bounds and size.
+        // Flood fill one blob, tracking the bounds of the edges in it and
+        // the first and last of them on each row.
         let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
-        let mut size = 0usize;
+        let mut spans: Vec<(usize, usize, usize)> = Vec::new();
         visited[start] = true;
         stack.push(start);
         while let Some(index) = stack.pop() {
             let (x, y) = (index % w, index / w);
-            (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1));
-            size += 1;
+            if mask[index] {
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1));
+                spans.push((y, x, x + 1));
+            }
             for ny in y.saturating_sub(1)..=(y + 1).min(h - 1) {
                 for nx in x.saturating_sub(1)..=(x + 1).min(w - 1) {
                     let next = ny * w + nx;
-                    if mask[next] && !visited[next] {
+                    if joined[next] && !visited[next] {
                         visited[next] = true;
                         stack.push(next);
                     }
                 }
             }
         }
+        if x1 <= x0 + 2 * HALO || y1 <= y0 + 2 * HALO {
+            continue;
+        }
         let blob = Box { x0, y0, x1, y1 };
-        let (width, height) = ((x1 - x0) as f64 * view.scale, (y1 - y0) as f64 * view.scale);
+        let width = (x1 - x0 - 2 * HALO) as f64 * view.scale;
+        let height = (y1 - y0 - 2 * HALO) as f64 * view.scale;
         if !mm::PLATE_WIDTH.contains(&width) || !mm::PLATE_HEIGHT.contains(&height) {
+            if mm::PLATE_WIDTH.contains(&width) && height < *mm::PLATE_HEIGHT.start() {
+                halves.push(blob);
+            }
             continue;
         }
-        if (size as f32) < 0.45 * blob.area() {
+        // A plate is a solid rectangle, even when only parts of its outline
+        // show. Fill in between the first and last edge on each row and in
+        // each column: a real plate comes out covering its whole box.
+        let (bw, bh) = (x1 - x0, y1 - y0);
+        let mut rows = vec![(usize::MAX, 0usize); bh];
+        let mut columns = vec![(usize::MAX, 0usize); bw];
+        for (y, x, _) in spans {
+            let row = &mut rows[y - y0];
+            *row = (row.0.min(x), row.1.max(x + 1));
+            let column = &mut columns[x - x0];
+            *column = (column.0.min(y), column.1.max(y + 1));
+        }
+        let spanned = (0..bh)
+            .flat_map(|j| (0..bw).map(move |i| (i, j)))
+            .filter(|&(i, j)| {
+                let (x, y) = (x0 + i, y0 + j);
+                (rows[j].0 <= x && x < rows[j].1) || (columns[i].0 <= y && y < columns[i].1)
+            })
+            .count();
+        if (spanned as f32) < SOLID * blob.area() {
             continue;
         }
-        // Nothing else close by: a plate sits alone on bare wall.
+        shaped.push(blob);
+    }
+
+    // A white plate on a white wall can show only its top and bottom edges,
+    // where the light catches them. Two plate-wide blobs, one directly above
+    // the other and a plate's height apart, are taken to be that.
+    halves.sort_by_key(|half| half.y0);
+    let mut used = vec![false; halves.len()];
+    for upper in 0..halves.len() {
+        for lower in upper + 1..halves.len() {
+            if used[upper] || used[lower] {
+                continue;
+            }
+            let (a, b) = (halves[upper], halves[lower]);
+            let shared = a.x1.min(b.x1).saturating_sub(a.x0.max(b.x0));
+            let narrower = (a.x1 - a.x0).min(b.x1 - b.x0);
+            let whole = Box {
+                x0: a.x0.min(b.x0),
+                y0: a.y0,
+                x1: a.x1.max(b.x1),
+                y1: b.y1,
+            };
+            let width = (whole.x1 - whole.x0 - 2 * HALO) as f64 * view.scale;
+            let height = (whole.y1 - whole.y0 - 2 * HALO) as f64 * view.scale;
+            if b.y0 < a.y1
+                || shared * 10 < narrower * 7
+                || !mm::PLATE_WIDTH.contains(&width)
+                || !mm::PLATE_HEIGHT.contains(&height)
+            {
+                continue;
+            }
+            used[upper] = true;
+            used[lower] = true;
+            shaped.push(whole);
+        }
+    }
+
+    // Nothing else close by: a plate sits alone on bare wall, or beside
+    // another plate.
+    let mut plates = Vec::new();
+    for (index, blob) in shaped.iter().enumerate() {
         let around = Box {
-            x0: x0.saturating_sub(ring),
-            y0: y0.saturating_sub(ring),
-            x1: (x1 + ring).min(w),
-            y1: (y1 + ring).min(h),
+            x0: blob.x0.saturating_sub(ring),
+            y0: blob.y0.saturating_sub(ring),
+            x1: (blob.x1 + ring).min(w),
+            y1: (blob.y1 + ring).min(h),
         };
-        let nearby = busy.count(&around) - busy.count(&blob);
+        let neighbours: u32 = shaped
+            .iter()
+            .enumerate()
+            .filter(|&(other, _)| other != index)
+            .map(|(_, other)| {
+                busy.count(&Box {
+                    x0: around.x0.max(other.x0),
+                    y0: around.y0.max(other.y0),
+                    x1: around.x1.min(other.x1).max(around.x0.max(other.x0)),
+                    y1: around.y1.min(other.y1).max(around.y0.max(other.y0)),
+                })
+            })
+            .sum();
+        let nearby = (busy.count(&around) - busy.count(blob)).saturating_sub(neighbours);
         if nearby as f32 > 0.1 * (around.area() - blob.area()) {
             continue;
         }
         if openings.iter().any(|opening| blob.overlap(opening) > 0.0) {
             continue;
         }
-        plates.push(blob);
+        plates.push(Box {
+            x0: blob.x0 + HALO,
+            y0: blob.y0 + HALO,
+            x1: blob.x1 - HALO,
+            y1: blob.y1 - HALO,
+        });
     }
     plates
 }
