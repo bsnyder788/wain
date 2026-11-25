@@ -8,7 +8,8 @@ a dimensioned elevation, a cut list and a shopping list.
 ```
 crates/
   wain-core/    Layout engine: units, wall layout, cut list, stock packing. Pure Rust, no I/O.
-  wain-wasm/    WebAssembly bindings for the engine (JSON in, JSON out).
+  wain-vision/  Finds a wall's outline, and what is on the wall, in a photo. Pure Rust, no I/O.
+  wain-wasm/    WebAssembly bindings for the engine and photo detection (JSON in, JSON out).
   wain-server/  HTTP API (axum + Postgres): accounts, credits, AI suggestions, plan.
 apps/
   web/          SvelteKit single-page app. Runs the engine in the browser.
@@ -102,11 +103,14 @@ uses the browser's own print dialog, so it works offline and needs no server.
 
 ## Photo preview
 
-- The user marks a wall's four corners on a photo. `wain-core`'s
+- A wall's four corners are marked on a photo. `wain-core`'s
   `perspective` module turns those into a homography between the wall's
   elevation and the photo (closed form, no solver), which the web app uses to
   draw the plan's parts over the photo and to turn a drag on the photo into
   an obstruction's position on the wall.
+- The app places the corners itself when a photo is added, and then offers
+  the doors, windows, outlets and switches it can see for the user to accept
+  (see "Photo detection" below). Both can be redone or done by hand.
 - `Wall.photo` holds only the image id, its pixel size and the corners (as
   fractions of the image). Layout never reads it, and half-placed corners do
   not block the plan.
@@ -115,6 +119,36 @@ uses the browser's own print dialog, so it works offline and needs no server.
   strips metadata such as GPS location. Cloud storage arrives with accounts.
 - Lens distortion is ignored, and the overlay is a flat sketch rather than a
   rendering.
+
+## Photo detection
+
+`wain-vision` reads a photo with classical image processing: no trained
+model, nothing sent to a server. It runs in the browser as part of the same
+WebAssembly package, in well under a tenth of a second.
+
+- **The wall's outline** (`find_wall`): long straight edges are found with a
+  Hough transform, and every combination of a ceiling line, a floor line and
+  two ends is scored by how well its sides sit on edges that stop at its
+  corners, whether other lines end at those corners as they do where walls
+  meet, and whether what is inside is the wall's colour. A side with no edge
+  to follow falls back to the border of the photo and is reported as not
+  found, so the app can say which corners are guesses.
+- **What is on the wall** (`find_obstructions`): the photo is redrawn as if
+  the wall were seen square-on, at a known scale. Doors and windows are then
+  upright rectangles with edges on every side and plain wall around them;
+  outlets and switches are isolated blobs the size of a cover plate, told
+  apart by height. Sizes come out in the wall's own measurements.
+- Both are guesses for the user to confirm. Corner shots of two walls and
+  cluttered rooms can throw the outline off; a framed picture can be offered
+  as a window; doors are found less reliably than windows and outlets.
+  Found sizes are rounded to 1/4" or 5 mm and are no substitute for a tape.
+- `crates/wain-vision/tests/scenes.rs` checks both against rooms it draws
+  itself, where the answer is known. For real photos there is a tool that
+  writes an annotated copy:
+
+  ```sh
+  cargo run --release -p wain-vision --example detect -- room.jpg out.png 3600 2400
+  ```
 
 ## Server
 

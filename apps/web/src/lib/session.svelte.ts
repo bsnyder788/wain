@@ -80,7 +80,8 @@ function forgetPhoto(wall: Wall) {
 
 /**
  * Attaches a photo to a wall, replacing any it had. The corners start as an
- * inset rectangle for the user to drag onto the real corners of the wall.
+ * inset rectangle. The photo view then looks for the wall's outline and
+ * moves them onto it if it finds one; either way the user can drag them.
  */
 export async function setPhoto(wall: Wall, file: Blob) {
 	const stored = await importPhoto(file);

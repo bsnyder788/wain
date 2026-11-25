@@ -1,14 +1,19 @@
 <script lang="ts">
+	import { detectObstructions, detectOutline, photoGrid } from '#lib/detect.ts';
 	import {
 		formatLength,
 		wallHomography,
 		type Design,
 		type Length,
+		type Obstruction,
 		type ObstructionKind,
+		type Point,
 		type Rect,
+		type SidesFound,
 		type UnitPrefs,
 		type Wall,
-		type WallLayout
+		type WallLayout,
+		type WallPhoto
 	} from '#lib/engine/index.ts';
 	import { OBSTRUCTION_NAMES } from '#lib/labels.ts';
 	import { rectPoints, toPhoto, toWall } from '#lib/perspective.ts';
@@ -26,8 +31,11 @@
 	const MARKABLE = ['door', 'window', 'outlet', 'switch'] as const;
 	const CORNER_NAMES = ['Top left', 'Top right', 'Bottom right', 'Bottom left'];
 
-	/** `view` just shows the preview; otherwise the user is placing something. */
-	type Mode = 'view' | 'corners' | ObstructionKind;
+	/**
+	 * `view` just shows the preview and `review` shows what was found on the
+	 * wall for the user to accept; otherwise the user is placing something.
+	 */
+	type Mode = 'view' | 'corners' | 'review' | ObstructionKind;
 	let mode = $state<Mode>('view');
 	let showDesign = $state(true);
 	let busy = $state(false);
@@ -36,7 +44,7 @@
 	const photo = $derived(wall.photo);
 	const mapping = $derived(wallHomography(wall));
 	const homography = $derived(mapping && 'ok' in mapping ? mapping.ok : undefined);
-	const marking = $derived(mode !== 'view' && mode !== 'corners');
+	const marking = $derived(mode !== 'view' && mode !== 'corners' && mode !== 'review');
 
 	// The stored image, loaded from this device whenever the wall's photo changes.
 	let url = $state<string>();
@@ -76,17 +84,149 @@
 		failure = null;
 		try {
 			await setPhoto(wall, file);
-			mode = 'corners';
 		} catch {
 			failure = 'That file could not be read as a photo. Try a JPEG or PNG.';
+			return;
 		} finally {
 			busy = false;
 		}
+		mode = 'corners';
+		suggestions = [];
+		notice = null;
+		// A new photo gets the full treatment: its corners are found now, and
+		// what is on the wall once the user is happy with the corners.
+		unscanned = true;
+		await findCorners();
 	}
 
 	function remove() {
 		removePhoto(wall);
 		mode = 'view';
+		suggestions = [];
+		notice = null;
+		guess = null;
+	}
+
+	// ---- Finding things in the photo -----------------------------------------
+
+	/** True while the photo is being analysed. */
+	let looking = $state(false);
+	/** How the last search for the wall's outline went, until the user moves on. */
+	let guess = $state<{ sides: SidesFound; before: WallPhoto['corners'] } | 'none' | null>(null);
+	/** Set for a photo added just now, whose wall has not been searched yet. */
+	let unscanned = false;
+	/** Things found on the wall, waiting for the user to accept or reject. */
+	let suggestions = $state<{ obstruction: Obstruction; chosen: boolean }[]>([]);
+	/** The outcome of the last action, shown until the next one. */
+	let notice = $state<string | null>(null);
+
+	const chosen = $derived(suggestions.filter((suggestion) => suggestion.chosen));
+
+	/** Places the corners on the wall's outline, if one can be found. */
+	async function findCorners() {
+		const id = wall.photo?.image_id;
+		if (!id || looking) return;
+		looking = true;
+		try {
+			const found = await detectOutline(wall);
+			// The photo may have been replaced or removed while this ran.
+			const current = wall.photo;
+			if (current?.image_id !== id) return;
+			if (!found) {
+				guess = 'none';
+				return;
+			}
+			guess = { sides: found.sides, before: $state.snapshot(current.corners) };
+			current.corners = found.corners.map(
+				(corner): Point => ({ x: clampFraction(corner.x), y: clampFraction(corner.y) })
+			) as WallPhoto['corners'];
+		} catch {
+			guess = 'none';
+		} finally {
+			looking = false;
+		}
+	}
+
+	function undoCorners() {
+		if (photo && guess && guess !== 'none') photo.corners = guess.before;
+		guess = null;
+	}
+
+	function toggleCorners() {
+		guess = null;
+		notice = null;
+		if (mode !== 'corners') {
+			mode = 'corners';
+			return;
+		}
+		mode = 'view';
+		if (unscanned && homography) void findOnWall();
+	}
+
+	/** Looks for doors, windows, outlets and switches and offers what it finds. */
+	async function findOnWall() {
+		if (!homography || looking) return;
+		unscanned = false;
+		mode = 'view';
+		notice = null;
+		looking = true;
+		try {
+			const found = await detectObstructions(wall, grid);
+			// Only if the user has not started on something else meanwhile.
+			if (mode !== 'view') return;
+			if (found.length > 0) {
+				suggestions = found.map((obstruction) => ({ obstruction, chosen: true }));
+				mode = 'review';
+			} else {
+				const already = wall.obstructions.length > 0 ? ' that are not already on the wall' : '';
+				notice = `Found no doors, windows, outlets or switches${already}. Mark any there are with the buttons below.`;
+			}
+		} catch {
+			notice = 'This photo could not be analysed. Mark things yourself with the buttons below.';
+		} finally {
+			looking = false;
+		}
+	}
+
+	function acceptSuggestions() {
+		const added = chosen.map((suggestion) => $state.snapshot(suggestion.obstruction));
+		wall.obstructions.push(...added);
+		const things = added.length === 1 ? 'It is' : 'They are';
+		notice =
+			added.length > 0
+				? `Added ${added.length} to the wall. ${things} in the wall's list, where you can correct the sizes.`
+				: null;
+		suggestions = [];
+		mode = 'view';
+	}
+
+	function dismissSuggestions() {
+		suggestions = [];
+		mode = 'view';
+	}
+
+	function describe(obstruction: Obstruction): string {
+		const { kind, rect } = obstruction;
+		const size = `${fmt(rect.width)} × ${fmt(rect.height)}`;
+		// A door stands on the floor, so only its position along the wall matters.
+		const where =
+			rect.y === 0
+				? `${fmt(rect.x)} from the left`
+				: `${fmt(rect.x)} from the left, ${fmt(rect.y)} up`;
+		return `${OBSTRUCTION_NAMES[kind]}, ${size}, ${where}`;
+	}
+
+	const SIDE_NAMES: [keyof SidesFound, string][] = [
+		['top', 'ceiling line'],
+		['bottom', 'floor line'],
+		['left', 'left-hand end'],
+		['right', 'right-hand end']
+	];
+
+	function list(items: string[]): string {
+		return items.length <= 1
+			? items.join('')
+			: `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 	}
 
 	// ---- Drawing, in photo pixels -------------------------------------------
@@ -149,6 +289,8 @@
 	let dragging = $state<number | null>(null);
 
 	function startCorner(event: PointerEvent & { currentTarget: SVGElement }, index: number) {
+		// From here the corners are the user's, so there is nothing to undo.
+		guess = null;
 		dragging = index;
 		event.currentTarget.setPointerCapture(event.pointerId);
 		event.preventDefault();
@@ -170,6 +312,7 @@
 		const move = moves[event.key];
 		if (!move || !photo) return;
 		event.preventDefault();
+		guess = null;
 		const corner = photo.corners[index];
 		moveCorner(index, corner.x * photo.width + move[0], corner.y * photo.height + move[1]);
 	}
@@ -180,7 +323,7 @@
 	let draft = $state<{ from: [Length, Length]; to: [Length, Length] } | null>(null);
 
 	// Photo positions are estimates, so they snap to a coarse grid.
-	const grid = $derived(units.system === 'imperial' ? 6_350_000 : 5_000_000);
+	const grid = $derived(photoGrid(units));
 	const SMALLEST = 25_000_000;
 
 	function draftRect(kind: ObstructionKind): Rect | undefined {
@@ -225,17 +368,32 @@
 	}
 
 	const fmt = (length: Length) => formatLength(length, units);
+	const CORNERS_HELP =
+		'Drag each dot onto a corner of the wall, where it meets the ceiling, the floor and the side walls. Arrow keys nudge the selected dot.';
 	const hint = $derived.by(() => {
+		if (looking) return 'Looking at the photo…';
 		if (mapping && 'error' in mapping) {
 			return 'The corners are crossed over. Drag them so they go around the wall in order.';
 		}
 		if (mode === 'corners') {
-			return 'Drag each dot onto a corner of the wall, where it meets the ceiling, the floor and the side walls. Arrow keys nudge the selected dot.';
+			if (guess === 'none') {
+				return `Could not pick out the wall in this photo. ${CORNERS_HELP}`;
+			}
+			if (guess) {
+				const sides = guess.sides;
+				const missing = SIDE_NAMES.filter(([side]) => !sides[side]).map(([, name]) => name);
+				if (missing.length === 0) {
+					return 'Found the wall and put a dot on each corner. Check them, and drag any that are off.';
+				}
+				const found = SIDE_NAMES.filter(([side]) => sides[side]).map(([, name]) => name);
+				return `Found the wall's ${list(found)}, but not its ${list(missing)}. The dots on the edge of the photo are guesses: drag them to where those corners are, even if that is just out of shot.`;
+			}
+			return CORNERS_HELP;
 		}
 		if (marking) {
 			return `Drag from one corner of the ${OBSTRUCTION_NAMES[mode as ObstructionKind].toLowerCase()} to the opposite corner, including its casing or cover plate.`;
 		}
-		return null;
+		return notice;
 	});
 </script>
 
@@ -277,7 +435,9 @@
 			onpointerup={endMark}
 			onpointercancel={() => (draft = null)}
 		>
-			{#if homography && showDesign}
+			<!-- Hidden while reviewing, so what was found can be checked against
+			     the photo itself. -->
+			{#if homography && showDesign && mode !== 'review'}
 				<path class="paint" d={paint} fill-rule="evenodd" />
 				{#each layout?.parts ?? [] as part, index (index)}
 					<polygon class="part" points={rectPoints(homography, part.rect)} />
@@ -287,6 +447,25 @@
 			{#if homography && mode !== 'view'}
 				{#each wall.obstructions as obstruction, index (index)}
 					<polygon class="marked" points={rectPoints(homography, obstruction.rect)} />
+				{/each}
+			{/if}
+
+			{#if homography && mode === 'review'}
+				{#each suggestions as suggestion, index (index)}
+					{@const rect = suggestion.obstruction.rect}
+					{@const [u, v] = toPhoto(homography, rect.x + rect.width / 2, rect.y + rect.height / 2)}
+					<!-- A shortcut for the tick boxes below the photo, which are
+					     the real controls. -->
+					<polygon
+						class="suggested"
+						class:off={!suggestion.chosen}
+						points={rectPoints(homography, rect)}
+						aria-hidden="true"
+						onclick={() => (suggestion.chosen = !suggestion.chosen)}
+					/>
+					<text class="size" class:off={!suggestion.chosen} x={u} y={v} font-size={handle * 1.8}>
+						{OBSTRUCTION_NAMES[suggestion.obstruction.kind]}
+					</text>
 				{/each}
 			{/if}
 
@@ -330,40 +509,84 @@
 		</svg>
 	</div>
 
-	{#if hint}<p class="hint" role="status">{hint}</p>{/if}
+	{#if hint}
+		<p class="hint" role="status">
+			{hint}
+			{#if mode === 'corners' && guess && guess !== 'none' && !looking}
+				<button type="button" class="inline" onclick={undoCorners}>Put them back</button>
+			{/if}
+		</p>
+	{/if}
 
-	<div class="tools">
-		<button
-			type="button"
-			aria-pressed={mode === 'corners'}
-			onclick={() => (mode = mode === 'corners' ? 'view' : 'corners')}
-		>
-			{mode === 'corners' ? 'Done' : 'Adjust corners'}
-		</button>
-		<span class="group" role="group" aria-label="Mark on the photo">
-			<span class="group-label">Mark</span>
-			{#each MARKABLE as kind (kind)}
+	{#if mode === 'review'}
+		<fieldset class="found">
+			<legend>Found on this wall</legend>
+			<p>
+				Untick anything that is wrong or that is not there, then add the rest. Sizes are read off
+				the photo, so treat them as a starting point.
+			</p>
+			<ul>
+				{#each suggestions as suggestion, index (index)}
+					<li>
+						<label>
+							<input type="checkbox" bind:checked={suggestion.chosen} />
+							{describe(suggestion.obstruction)}
+						</label>
+					</li>
+				{/each}
+			</ul>
+			<div class="actions">
 				<button
 					type="button"
-					aria-pressed={mode === kind}
-					disabled={!homography}
-					onclick={() => (mode = mode === kind ? 'view' : kind)}
+					class="primary"
+					disabled={chosen.length === 0}
+					onclick={acceptSuggestions}
 				>
-					{OBSTRUCTION_NAMES[kind]}
+					Add {chosen.length} to the wall
 				</button>
-			{/each}
-		</span>
-		<label class="toggle">
-			<input type="checkbox" bind:checked={showDesign} />
-			Show design
-		</label>
-		<span class="spacer"></span>
-		<label class="button quiet" aria-busy={busy}>
-			{busy ? 'Replacing…' : 'Replace photo'}
-			<input type="file" accept="image/*" onchange={choose} disabled={busy} />
-		</label>
-		<button type="button" class="quiet" onclick={remove}>Remove photo</button>
-	</div>
+				<button type="button" class="quiet" onclick={dismissSuggestions}>Add none</button>
+			</div>
+		</fieldset>
+	{:else}
+		<div class="tools">
+			<button type="button" aria-pressed={mode === 'corners'} onclick={toggleCorners}>
+				{mode === 'corners' ? 'Done' : 'Adjust corners'}
+			</button>
+			{#if mode === 'corners'}
+				<button type="button" disabled={looking} onclick={findCorners}>Find corners for me</button>
+			{:else}
+				<span class="group" role="group" aria-label="Mark on the photo">
+					<span class="group-label">Mark</span>
+					{#each MARKABLE as kind (kind)}
+						<button
+							type="button"
+							aria-pressed={mode === kind}
+							disabled={!homography}
+							onclick={() => {
+								notice = null;
+								mode = mode === kind ? 'view' : kind;
+							}}
+						>
+							{OBSTRUCTION_NAMES[kind]}
+						</button>
+					{/each}
+					<button type="button" disabled={!homography || looking} onclick={findOnWall}>
+						Find them for me
+					</button>
+				</span>
+			{/if}
+			<label class="toggle">
+				<input type="checkbox" bind:checked={showDesign} />
+				Show design
+			</label>
+			<span class="spacer"></span>
+			<label class="button quiet" aria-busy={busy}>
+				{busy ? 'Replacing…' : 'Replace photo'}
+				<input type="file" accept="image/*" onchange={choose} disabled={busy} />
+			</label>
+			<button type="button" class="quiet" onclick={remove}>Remove photo</button>
+		</div>
+	{/if}
 	{#if failure}<p class="field-error" role="alert">{failure}</p>{/if}
 	<p class="note">
 		This is a sketch of where the trim goes, not a rendering. Sizes marked on a photo are
@@ -478,6 +701,21 @@
 		fill: rgb(47 93 80 / 0.3);
 		stroke-dasharray: none;
 	}
+	.suggested {
+		fill: rgb(47 93 80 / 0.25);
+		stroke: var(--accent);
+		stroke-width: 2;
+		cursor: pointer;
+	}
+	.suggested.off {
+		fill: none;
+		stroke: white;
+		stroke-dasharray: 4 4;
+		opacity: 0.8;
+	}
+	.size.off {
+		opacity: 0.5;
+	}
 	.size {
 		text-anchor: middle;
 		dominant-baseline: central;
@@ -526,6 +764,57 @@
 		border-radius: var(--radius);
 		background: var(--warn-bg);
 		font-size: 0.9rem;
+	}
+	/* A button that reads as part of the sentence it follows. */
+	.inline {
+		margin-left: 0.25rem;
+		padding: 0;
+		border: none;
+		background: none;
+		color: var(--accent);
+		text-decoration: underline;
+	}
+	.found {
+		margin: 0.75rem 0 0;
+		padding: 0.75rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+	}
+	.found legend {
+		padding: 0 0.3rem;
+		font-weight: 600;
+	}
+	.found p {
+		margin: 0;
+		font-size: 0.9rem;
+		color: var(--ink-soft);
+	}
+	.found ul {
+		display: grid;
+		gap: 0.35rem;
+		margin: 0.6rem 0;
+		padding: 0;
+		list-style: none;
+	}
+	.found label {
+		display: flex;
+		align-items: baseline;
+		gap: 0.45rem;
+	}
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem;
+	}
+	.actions .primary {
+		border-color: var(--accent);
+		background: var(--accent);
+		color: white;
+		font-weight: 600;
+	}
+	.actions .primary:disabled {
+		opacity: 0.5;
+		cursor: default;
 	}
 	.tools {
 		display: flex;

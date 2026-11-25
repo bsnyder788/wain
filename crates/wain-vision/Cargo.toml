@@ -1,0 +1,19 @@
+[package]
+name = "wain-vision"
+description = "Finds a wall's outline and what is on it in a photo, with classical image processing. Pure, no I/O."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+# Derives TypeScript bindings; see scripts/build-engine.sh.
+ts = ["dep:ts-rs", "wain-core/ts"]
+
+[dependencies]
+wain-core.workspace = true
+serde.workspace = true
+ts-rs = { version = "12", optional = true }
+
+[dev-dependencies]
+# Only for `examples/detect.rs`, which reads a photo and writes an annotated copy.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

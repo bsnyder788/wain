@@ -1,6 +1,7 @@
 //! WebAssembly bindings for the wain layout engine.
 //!
-//! Structured values cross the boundary as JSON strings. The shapes are the
+//! Structured values cross the boundary as JSON strings, and a photo's
+//! pixels as plain bytes. The shapes are the
 //! serde forms of the `wain-core` types, and the web app gets matching
 //! TypeScript definitions generated from those same types, so the boundary
 //! stays typed without a second, hand-written schema. Lengths are plain
@@ -9,6 +10,7 @@
 use wain_core::{
     Design, Homography, Length, PlanError, Point, Project, StyleKind, UnitPrefs, UnitSystem,
 };
+use wain_vision::Photo;
 use wasm_bindgen::prelude::*;
 
 fn from_json<T: serde::de::DeserializeOwned>(json: &str, what: &str) -> Result<T, JsError> {
@@ -61,6 +63,49 @@ pub fn wall_homography(
     Homography::for_wall(width, height, &corners)
         .map(|homography| to_json(&homography))
         .map_err(|error| JsError::new(&error.to_string()))
+}
+
+fn photo(rgba: &[u8], width: u32, height: u32) -> Result<Photo<'_>, JsError> {
+    Photo::new(rgba, width as usize, height as usize)
+        .ok_or_else(|| JsError::new("the pixels do not match the photo's size"))
+}
+
+/// Looks for the wall's outline in a photo. `rgba` holds the photo's pixels
+/// as a canvas gives them: four bytes each, row by row. Returns a
+/// `WallOutline` as JSON, or `null` when no outline stands out. Throws only
+/// if the pixels do not match the stated size.
+#[wasm_bindgen]
+pub fn find_wall(rgba: &[u8], width: u32, height: u32) -> Result<String, JsError> {
+    Ok(to_json(&wain_vision::find_wall(&photo(
+        rgba, width, height,
+    )?)))
+}
+
+/// Looks for doors, windows, outlets and switches on a wall whose corners
+/// are known. `corners_json` holds the corners as fractions of the photo's
+/// size, ordered top-left, top-right, bottom-right, bottom-left. Returns a
+/// list of `Obstruction` as JSON, empty when nothing is found or the
+/// corners do not outline a wall.
+#[wasm_bindgen]
+pub fn find_obstructions(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    wall_width_nm: f64,
+    wall_height_nm: f64,
+    corners_json: &str,
+) -> Result<String, JsError> {
+    let corners: [Point; 4] = from_json(corners_json, "corners")?;
+    if !wall_width_nm.is_finite() || !wall_height_nm.is_finite() {
+        return Err(JsError::new("the wall size is not a finite number"));
+    }
+    let found = wain_vision::find_obstructions(
+        &photo(rgba, width, height)?,
+        Length::from_nm(wall_width_nm.round() as i64),
+        Length::from_nm(wall_height_nm.round() as i64),
+        &corners,
+    );
+    Ok(to_json(&found))
 }
 
 /// A one-wall starter project. `system` is `"imperial"` or `"metric"`.

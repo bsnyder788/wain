@@ -13,6 +13,7 @@ import type { InitInput } from './pkg/wain_wasm.js';
 import type { Design } from './bindings/Design';
 import type { Homography } from './bindings/Homography';
 import type { Length } from './bindings/Length';
+import type { Obstruction } from './bindings/Obstruction';
 import type { Plan } from './bindings/Plan';
 import type { PlanError } from './bindings/PlanError';
 import type { Project } from './bindings/Project';
@@ -20,6 +21,7 @@ import type { StyleKind } from './bindings/StyleKind';
 import type { UnitPrefs } from './bindings/UnitPrefs';
 import type { UnitSystem } from './bindings/UnitSystem';
 import type { Wall } from './bindings/Wall';
+import type { WallOutline } from './bindings/WallOutline';
 
 export type { Baseboard } from './bindings/Baseboard';
 export type { BoardAndBatten } from './bindings/BoardAndBatten';
@@ -44,6 +46,7 @@ export type { Profile } from './bindings/Profile';
 export type { Project } from './bindings/Project';
 export type { Rect } from './bindings/Rect';
 export type { ShakerPanel } from './bindings/ShakerPanel';
+export type { SidesFound } from './bindings/SidesFound';
 export type { StockBoard } from './bindings/StockBoard';
 export type { StockGroup } from './bindings/StockGroup';
 export type { StockOptions } from './bindings/StockOptions';
@@ -53,6 +56,7 @@ export type { UnitPrefs } from './bindings/UnitPrefs';
 export type { UnitSystem } from './bindings/UnitSystem';
 export type { Wall } from './bindings/Wall';
 export type { WallLayout } from './bindings/WallLayout';
+export type { WallOutline } from './bindings/WallOutline';
 export type { WallPhoto } from './bindings/WallPhoto';
 export type { Warning } from './bindings/Warning';
 
@@ -102,6 +106,49 @@ export function wallHomography(wall: Wall): HomographyResult | undefined {
 	} catch (error) {
 		return { error: error instanceof Error ? error.message : String(error) };
 	}
+}
+
+/**
+ * A photo's pixels as a canvas gives them: four bytes each (red, green,
+ * blue, alpha), row by row from the top-left. An `ImageData` fits.
+ */
+export type Pixels = { data: Uint8ClampedArray | Uint8Array; width: number; height: number };
+
+function bytes(pixels: Pixels): Uint8Array {
+	const { data } = pixels;
+	return data instanceof Uint8Array
+		? data
+		: new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+}
+
+/**
+ * Looks for the wall's outline in a photo: its four corners, and which of
+ * its sides were actually seen. `undefined` when no outline stands out. A
+ * best guess for the user to check, not a measurement.
+ */
+export function findWall(pixels: Pixels): WallOutline | undefined {
+	return JSON.parse(wasm.find_wall(bytes(pixels), pixels.width, pixels.height)) ?? undefined;
+}
+
+/**
+ * Looks for doors, windows, outlets and switches in a wall's photo, placed
+ * in the wall's own measurements using the corners marked on it. The pixels
+ * can be a smaller copy of the stored photo. Empty when the wall has no
+ * photo or its corners do not outline a wall. Suggestions for the user to
+ * confirm: anything rectangular can pass for a window.
+ */
+export function findObstructions(wall: Wall, pixels: Pixels): Obstruction[] {
+	if (!wall.photo) return [];
+	return JSON.parse(
+		wasm.find_obstructions(
+			bytes(pixels),
+			pixels.width,
+			pixels.height,
+			wall.width,
+			wall.height,
+			JSON.stringify(wall.photo.corners)
+		)
+	);
 }
 
 export function starterProject(system: UnitSystem): Project {

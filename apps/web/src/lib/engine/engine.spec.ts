@@ -2,10 +2,13 @@
 import { readFile } from 'node:fs/promises';
 import { beforeAll, describe, expect, it } from 'vitest';
 
+import { photoGrid, tidy } from '../detect.ts';
 import { rectPoints, toPhoto, toWall } from '../perspective.ts';
 import { designFacts, levelLines, placements } from '../plan-sheet.ts';
 import {
 	defaultDesign,
+	findObstructions,
+	findWall,
 	formatLength,
 	loadEngine,
 	normalizeProject,
@@ -13,11 +16,13 @@ import {
 	planProject,
 	starterProject,
 	wallHomography,
+	type Pixels,
 	type UnitPrefs,
 	type Wall
 } from './index.ts';
 
 const INCH = 25_400_000;
+const MM = 1_000_000;
 const imperial: UnitPrefs = { system: 'imperial', fraction_denominator: 16, feet_and_inches: false };
 
 beforeAll(async () => {
@@ -89,6 +94,76 @@ describe('engine', () => {
 		expect(wallHomography(wall)).toHaveProperty('error');
 	});
 
+	it('finds the wall and a door in a photo', () => {
+		const pixels = roomPhoto();
+		const outline = findWall(pixels);
+		if (!outline) throw new Error('expected an outline');
+		expect(outline.sides).toEqual({ top: true, right: true, bottom: true, left: true });
+		// The wall was drawn from (50, 40) to (350, 240) in a 400 x 300 photo.
+		const expected = [
+			[50, 40],
+			[350, 40],
+			[350, 240],
+			[50, 240]
+		];
+		outline.corners.forEach((corner, index) => {
+			expect(Math.abs(corner.x * 400 - expected[index][0])).toBeLessThan(3);
+			expect(Math.abs(corner.y * 300 - expected[index][1])).toBeLessThan(3);
+		});
+
+		// A 3 m x 2.4 m wall, so the door drawn on it is 800 mm x 2040 mm,
+		// 500 mm from the left.
+		const wall = starterProject('metric').walls[0];
+		expect(findObstructions(wall, pixels)).toEqual([]);
+		wall.width = 3000 * MM;
+		wall.height = 2400 * MM;
+		wall.photo = { image_id: 'test', width: 400, height: 300, corners: outline.corners };
+		const found = findObstructions(wall, pixels);
+		expect(found).toHaveLength(1);
+		expect(found[0].kind).toBe('door');
+		const rect = found[0].rect;
+		expect(rect.y).toBe(0);
+		expect(Math.abs(rect.x - 500 * MM)).toBeLessThan(40 * MM);
+		expect(Math.abs(rect.width - 800 * MM)).toBeLessThan(40 * MM);
+		expect(Math.abs(rect.height - 2040 * MM)).toBeLessThan(40 * MM);
+
+		// A featureless photo has no wall to find; mismatched pixels are an error.
+		const blank = { data: new Uint8ClampedArray(400 * 300 * 4).fill(128), width: 400, height: 300 };
+		expect(findWall(blank)).toBeUndefined();
+		expect(() => findWall({ ...blank, width: 399 })).toThrow();
+	});
+
+	it('tidies what was found on a wall before offering it', () => {
+		const wall = starterProject('metric').walls[0];
+		wall.obstructions.push({
+			kind: 'door',
+			rect: { x: 400 * MM, y: 0, width: 900 * MM, height: 2080 * MM }
+		});
+		const metric: UnitPrefs = { ...imperial, system: 'metric' };
+		const grid = photoGrid(metric);
+		expect(grid).toBe(5 * MM);
+		expect(photoGrid(imperial)).toBe(INCH / 4);
+
+		const tidied = tidy(
+			[
+				// The door that is already on the wall, seen slightly differently.
+				{ kind: 'door', rect: { x: 412 * MM, y: 0, width: 880 * MM, height: 2071 * MM } },
+				{ kind: 'outlet', rect: { x: 2003.4 * MM, y: 298.2 * MM, width: 71 * MM, height: 117 * MM } },
+				// Hanging off the end of the wall: trimmed to fit.
+				{ kind: 'window', rect: { x: 3001 * MM, y: 900 * MM, width: 700 * MM, height: 1700 * MM } }
+			],
+			wall,
+			grid
+		);
+		expect(tidied).toEqual([
+			{ kind: 'outlet', rect: { x: 2005 * MM, y: 300 * MM, width: 70 * MM, height: 115 * MM } },
+			{ kind: 'window', rect: { x: 3000 * MM, y: 900 * MM, width: 600 * MM, height: 1500 * MM } }
+		]);
+		// Everything offered is something the engine will accept.
+		wall.obstructions.push(...tidied);
+		expect(planProject({ ...starterProject('metric'), walls: [wall] })).toHaveProperty('ok');
+	});
+
 	it('fills in fields missing from an older save', () => {
 		const project = starterProject('metric');
 		delete (project.walls[0] as Partial<Wall>).photo;
@@ -141,3 +216,34 @@ describe('engine', () => {
 		expect(design.style).toMatchObject({ kind: 'picture_frame', chair_rail_height: 860_000_000 });
 	});
 });
+
+/**
+ * A 400 x 300 drawing of a room: a wall from (50, 40) to (350, 240) with a
+ * cased door on it, a ceiling, a floor, and the neighbouring walls running
+ * off at an angle the way they do in a photo.
+ */
+function roomPhoto(): Pixels {
+	const [width, height] = [400, 300];
+	const data = new Uint8ClampedArray(width * height * 4);
+	const colour = (x: number, y: number): [number, number, number] => {
+		// How far past the wall's ends this pixel is, if it is.
+		const beside = Math.max(50 - x, x - 349, 0);
+		const top = 40 - beside * 0.6;
+		const bottom = 240 + beside * 0.8;
+		if (y < top) return [238, 238, 234];
+		if (y >= bottom) return [128, 92, 64];
+		if (x < 50) return [173, 168, 156];
+		if (x >= 350) return [220, 214, 199];
+		if (x >= 100 && x < 180 && y >= 70) {
+			const casing = x < 107 || x >= 173 || y < 77;
+			return casing ? [244, 243, 238] : [120, 90, 70];
+		}
+		return [206, 200, 186];
+	};
+	for (let y = 0; y < height; y++) {
+		for (let x = 0; x < width; x++) {
+			data.set([...colour(x, y), 255], (y * width + x) * 4);
+		}
+	}
+	return { data, width, height };
+}
