@@ -1,0 +1,18 @@
+[package]
+name = "wain-server"
+description = "HTTP API for wain."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+wain-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+axum = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

@@ -1,0 +1,9 @@
+{
+	"extends": "$app/tsconfig",
+	"compilerOptions": {
+		"strict": true
+	},
+	"include": ["src", "vite.config.ts"],
+	// Generated WebAssembly glue: its .d.ts is used, its .js is not checked.
+	"exclude": ["src/lib/engine/pkg/*.js"]
+}

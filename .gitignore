@@ -1,0 +1,17 @@
+# Rust
+/target
+
+# Node
+node_modules/
+.svelte-kit/
+/apps/web/build/
+
+# Generated from the Rust engine by `npm run engine` (see README)
+/apps/web/src/lib/engine/pkg/
+/apps/web/src/lib/engine/bindings/
+
+# Local config
+.env
+.env.*
+!.env.example
+.DS_Store

@@ -1,0 +1,17 @@
+[package]
+name = "wain-core"
+description = "Wainscoting layout engine: units, wall layout, cut lists and stock planning. Pure, no I/O."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+# Derives TypeScript bindings; `cargo test --features ts` writes them out.
+ts = ["dep:ts-rs"]
+
+[dependencies]
+serde.workspace = true
+ts-rs = { version = "12", optional = true }
+
+[dev-dependencies]
+serde_json.workspace = true
