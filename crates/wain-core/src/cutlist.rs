@@ -15,14 +15,16 @@ pub struct CutItem {
     pub label: String,
     pub kind: PartKind,
     pub profile: Profile,
-    /// Finished length, rounded to the project's cut precision. For mitered
-    /// parts this is the long-point to long-point length.
+    /// Finished length, rounded to the project's cut precision. Mitered ends
+    /// are measured to the long point and coped ends to the wall.
     pub length: Length,
-    pub end_cut: EndCut,
+    /// The cut at each end: left then right as the piece sits on the wall,
+    /// or bottom then top for a vertical piece.
+    pub cuts: [EndCut; 2],
     pub quantity: u32,
 }
 
-type Key = (Profile, PartKind, std::cmp::Reverse<Length>, EndCut);
+type Key = (Profile, PartKind, std::cmp::Reverse<Length>, [EndCut; 2]);
 
 /// Builds the cut list for every wall and writes each item's label back onto
 /// the parts it covers.
@@ -35,7 +37,7 @@ pub(crate) fn build(layouts: &mut [WallLayout], precision: Length) -> Vec<CutIte
             part.profile,
             part.kind,
             std::cmp::Reverse(part.length.round_to(precision)),
-            part.end_cut,
+            part.cuts,
         )
     };
 
@@ -54,7 +56,7 @@ pub(crate) fn build(layouts: &mut [WallLayout], precision: Length) -> Vec<CutIte
             profile: key.0,
             kind: key.1,
             length: key.2.0,
-            end_cut: key.3,
+            cuts: key.3,
             quantity: counts[key],
         })
         .collect();

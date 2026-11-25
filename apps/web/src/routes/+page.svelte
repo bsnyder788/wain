@@ -4,6 +4,7 @@
 	import PlanTables from '#lib/components/PlanTables.svelte';
 	import WallEditor from '#lib/components/WallEditor.svelte';
 	import { planProject, type Plan } from '#lib/engine/index.ts';
+	import { jointNote } from '#lib/labels.ts';
 	import { addWall, removeWall, resetProject, session } from '#lib/session.svelte.ts';
 
 	const project = $derived(session.project);
@@ -23,6 +24,19 @@
 		return lastPlan;
 	});
 	const stale = $derived(issues.length > 0);
+
+	// Walls go around the room in order; the last one leads back to the first.
+	const count = $derived(project.walls.length);
+	const nameOf = (index: number) => project.walls[(index + count) % count].name || 'the next wall';
+	const cornerNotes = $derived.by(() => {
+		const layout = plan?.walls[wallIndex];
+		if (!layout) return [];
+		const boards = project.design.style.kind !== 'picture_frame';
+		return [
+			{ end: 'Left end', note: jointNote(layout.left_joint, nameOf(wallIndex - 1), boards) },
+			{ end: 'Right end', note: jointNote(layout.right_joint, nameOf(wallIndex + 1), boards) }
+		].filter((entry) => entry.note);
+	});
 </script>
 
 <div class="editor">
@@ -47,7 +61,11 @@
 					+
 				</button>
 			</div>
-			<WallEditor bind:wall={project.walls[wallIndex]} {units} />
+			<WallEditor
+				bind:wall={project.walls[wallIndex]}
+				{units}
+				nextWall={count > 1 ? nameOf(wallIndex + 1) : undefined}
+			/>
 			{#if project.walls.length > 1}
 				<button type="button" class="quiet remove" onclick={() => removeWall(wallIndex)}>
 					Remove this wall
@@ -85,6 +103,9 @@
 					design={project.design}
 					{units}
 				/>
+				{#each cornerNotes as entry (entry.end)}
+					<p class="note"><strong>{entry.end}:</strong> {entry.note}</p>
+				{/each}
 			</section>
 
 			<div class="panel tables" class:stale>

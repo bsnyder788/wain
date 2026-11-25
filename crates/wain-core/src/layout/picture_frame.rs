@@ -1,42 +1,38 @@
 //! A chair rail with equal mitered boxes of panel moulding beneath it.
+//!
+//! The boxes sit on the wall itself, one gap in from each corner, so corners
+//! do not move them. Only the chair rail meets the next wall: see
+//! [`super::corners`].
 
 use crate::geometry::Rect;
 use crate::style::PictureFrame;
 use crate::units::Length;
 
-use super::zones::{Edge, Zone};
-use super::{Material, Part, PartKind, best_division, count_hits, round_div};
+use super::align::Division;
+use super::zones::{Edge, Run, Zone};
+use super::{EndCut, Material, Part, PartKind, best_division, count_hits};
 
-pub(crate) fn layout_zone(
-    zone: &Zone,
-    style: &PictureFrame,
-    base_top: Length,
-    keep_clear: &[Rect],
-    parts: &mut Vec<Part>,
-) {
-    let length = zone.length();
-    let rail_bottom = style.chair_rail_height - style.chair_rail_width;
+/// The area of a zone that boxes are spread across.
+struct Field {
+    /// Left edge of the first box.
+    x: Length,
+    /// Bottom edge and height of every box.
+    y: Length,
+    height: Length,
+    division: Division,
+}
 
-    // The chair rail stops at a window casing; the window's own sill and
-    // apron take its place.
-    if !zone.under {
-        parts.push(Part::horizontal(
-            PartKind::ChairRail,
-            Material::ChairRail,
-            Rect::new(zone.x0, rail_bottom, length, style.chair_rail_width),
-        ));
-    }
-
-    let moulding = style.moulding_width;
+/// Works out where boxes can go in a zone, or `None` when it is too low.
+fn field(zone: &Zone, style: &PictureFrame, base_top: Length) -> Option<Field> {
     let gap = style.gap;
     // Smaller than this and a box is mostly moulding.
-    let min_box = moulding * 4;
+    let min_box = style.moulding_width * 4;
 
-    let field_top = zone.top.min(rail_bottom);
-    let box_y = base_top + gap;
-    let box_height = field_top - gap - box_y;
-    if box_height < min_box {
-        return;
+    let rail_bottom = style.chair_rail_height - style.chair_rail_width;
+    let y = base_top + gap;
+    let height = zone.top.min(rail_bottom) - gap - y;
+    if height < min_box {
+        return None;
     }
 
     // Boxes sit one gap in from a corner or casing. Under a window the outer
@@ -50,18 +46,75 @@ pub(crate) fn layout_zone(
         }
     };
     let lead = inset(zone.left);
-    let span = length - lead - inset(zone.right);
+    Some(Field {
+        x: zone.x0 + lead,
+        y,
+        height,
+        division: Division {
+            extent: zone.length() - lead - inset(zone.right),
+            separator: gap,
+            min_bay: min_box,
+        },
+    })
+}
+
+/// How this zone divides into boxes, for aligning widths across the room.
+pub(crate) fn division(zone: &Zone, style: &PictureFrame, base_top: Length) -> Option<Division> {
+    field(zone, style, base_top).map(|field| field.division)
+}
+
+/// Lays out one run with the box count chosen for each of its zones.
+pub(crate) fn layout_run(
+    run: &Run,
+    style: &PictureFrame,
+    counts: &[Option<i64>],
+    base_top: Length,
+    keep_clear: &[Rect],
+    parts: &mut Vec<Part>,
+) {
+    for (zone, &count) in run.zones.iter().zip(counts) {
+        layout_zone(run, zone, style, count, base_top, keep_clear, parts);
+    }
+}
+
+fn layout_zone(
+    run: &Run,
+    zone: &Zone,
+    style: &PictureFrame,
+    count: Option<i64>,
+    base_top: Length,
+    keep_clear: &[Rect],
+    parts: &mut Vec<Part>,
+) {
+    // The chair rail stops at a window casing; the window's own sill and
+    // apron take its place.
+    if !zone.under {
+        let (left, right) = run.joints(zone);
+        let projection = style.chair_rail_thickness;
+        let x0 = zone.x0 - left.moulding_extension(projection);
+        let x1 = zone.x1 + right.moulding_extension(projection);
+        let rect = Rect::new(
+            x0,
+            style.chair_rail_height - style.chair_rail_width,
+            x1 - x0,
+            style.chair_rail_width,
+        );
+        let rail = Part::horizontal(PartKind::ChairRail, Material::ChairRail, rect);
+        parts.push(rail.with_cuts([left.moulding_cut(), right.moulding_cut()]));
+    }
+
+    let (Some(field), Some(ideal)) = (field(zone, style, base_top), count) else {
+        return;
+    };
+    let moulding = style.moulding_width;
 
     let build = |count: i64| -> Option<Vec<Rect>> {
-        let box_width = (span - gap * (count - 1)) / count;
-        if box_width < min_box {
-            return None;
-        }
+        let width = field.division.bay(count)?;
         Some(
             (0..count)
                 .map(|i| {
-                    let x = zone.x0 + lead + (box_width + gap) * i;
-                    Rect::new(x, box_y, box_width, box_height)
+                    let x = field.x + (width + style.gap) * i;
+                    Rect::new(x, field.y, width, field.height)
                 })
                 .collect(),
         )
@@ -73,20 +126,19 @@ pub(crate) fn layout_zone(
             .sum()
     };
 
-    // span = count * box_width + (count - 1) * gap
-    let ideal = round_div(span + gap, style.target_box_width + gap).max(1);
     let Some(boxes) = best_division(ideal, build, hits) else {
         return;
     };
+    let mitered = [EndCut::FrameMiter, EndCut::FrameMiter];
     for frame in &boxes {
         let [bottom, top, left, right] = sides(frame, moulding);
         for rect in [bottom, top] {
             let part = Part::horizontal(PartKind::FrameMoulding, Material::PanelMoulding, rect);
-            parts.push(part.mitered());
+            parts.push(part.with_cuts(mitered));
         }
         for rect in [left, right] {
             let part = Part::vertical(PartKind::FrameMoulding, Material::PanelMoulding, rect);
-            parts.push(part.mitered());
+            parts.push(part.with_cuts(mitered));
         }
     }
 }

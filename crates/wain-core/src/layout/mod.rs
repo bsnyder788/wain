@@ -1,10 +1,17 @@
-//! Turns a wall and a design into placed parts.
+//! Turns walls and a design into placed parts.
 //!
-//! Layout works in three steps. [`zones`] splits the wall into runs between
-//! doors and, within each run, zones of constant available height. A style
-//! module then fills each zone with equally spaced members. Finally every
-//! part is checked against outlets and switches so conflicts are reported.
+//! Layout works on the whole project at once, in four steps:
+//!
+//! 1. [`zones`] splits each wall into runs between doors and, within a run,
+//!    zones of constant available height.
+//! 2. [`corners`] decides how the trim on adjoining walls meets.
+//! 3. [`align`] picks a bay count for every zone so that panel widths stay
+//!    consistent around the room.
+//! 4. A style module fills each zone, and every part is checked against
+//!    outlets and switches so conflicts are reported.
 
+mod align;
+mod corners;
 mod picture_frame;
 mod stile_rail;
 mod zones;
@@ -12,11 +19,15 @@ mod zones;
 use serde::{Deserialize, Serialize};
 
 use crate::geometry::Rect;
-use crate::model::{ObstructionKind, Wall};
-use crate::style::{Design, Style};
+use crate::model::{ObstructionKind, Project, Wall};
+use crate::style::{Design, PictureFrame, Style};
 use crate::units::{Length, UnitPrefs, format_length};
 
+pub use corners::Joint;
+
+use align::Division;
 use stile_rail::StileRail;
+use zones::{Run, Surface, Zone};
 
 /// Space kept clear around outlets, switches and vents when choosing where
 /// members go.
@@ -85,11 +96,17 @@ pub struct Profile {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum EndCut {
-    /// Both ends cut square.
     Square,
-    /// Both ends mitered at 45 degrees. The part's length is measured between
-    /// the long points.
-    Miter,
+    /// A 45 degree miter across the face, as at the corner of a picture
+    /// frame. Length is measured to the long point.
+    FrameMiter,
+    /// A 45 degree bevel through the thickness for an outside corner, with
+    /// the long point on the face. Length is measured to the long point.
+    OutsideMiter,
+    /// Shaped to fit over the profile of the piece on the adjoining wall at
+    /// an inside corner (or inside-mitered, if preferred). Length is measured
+    /// to the wall.
+    Cope,
 }
 
 /// One piece of trim placed on a wall.
@@ -102,7 +119,9 @@ pub struct Part {
     pub rect: Rect,
     /// Exact length along the part's long axis.
     pub length: Length,
-    pub end_cut: EndCut,
+    /// The cut at each end: left then right for a horizontal part, bottom
+    /// then top for a vertical one.
+    pub cuts: [EndCut; 2],
     /// Cut-list label shared by identical parts. Empty until the cut list is
     /// built.
     pub label: String,
@@ -118,7 +137,7 @@ impl Part {
             },
             rect,
             length: rect.width,
-            end_cut: EndCut::Square,
+            cuts: [EndCut::Square; 2],
             label: String::new(),
         }
     }
@@ -132,13 +151,13 @@ impl Part {
             },
             rect,
             length: rect.height,
-            end_cut: EndCut::Square,
+            cuts: [EndCut::Square; 2],
             label: String::new(),
         }
     }
 
-    fn mitered(mut self) -> Part {
-        self.end_cut = EndCut::Miter;
+    fn with_cuts(mut self, cuts: [EndCut; 2]) -> Part {
+        self.cuts = cuts;
         self
     }
 }
@@ -148,6 +167,9 @@ impl Part {
 pub struct WallLayout {
     pub wall_id: String,
     pub parts: Vec<Part>,
+    /// What the trim meets at the wall's left and right ends.
+    pub left_joint: Joint,
+    pub right_joint: Joint,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -172,60 +194,162 @@ pub struct Warning {
     pub message: String,
 }
 
-/// Lays out one wall. The project must already have passed validation.
-pub(crate) fn layout_wall(
-    wall: &Wall,
-    design: &Design,
-    units: &UnitPrefs,
-) -> (WallLayout, Vec<Warning>) {
-    let base_top = design.baseboard.height;
-    let surface = zones::analyze(wall, base_top, design.style.top());
-    let keep_clear: Vec<Rect> = surface
-        .small
-        .iter()
-        .map(|&(_, rect)| rect.inflate(CLEARANCE))
-        .collect();
+/// The style-specific half of layout: how zones divide and what goes in them.
+enum Solver<'a> {
+    PictureFrame(&'a PictureFrame),
+    StileRail(StileRail),
+}
 
-    let mut parts = Vec::new();
-    for run in &surface.runs {
-        if !design.baseboard.existing && base_top.is_positive() {
-            parts.push(Part::horizontal(
-                PartKind::Baseboard,
-                Material::Baseboard,
-                Rect::new(run.x0, Length::ZERO, run.x1 - run.x0, base_top),
-            ));
-        }
+impl<'a> Solver<'a> {
+    fn new(design: &'a Design) -> Solver<'a> {
         match &design.style {
-            Style::PictureFrame(style) => {
-                for zone in &run.zones {
-                    picture_frame::layout_zone(zone, style, base_top, &keep_clear, &mut parts);
-                }
-            }
-            Style::BoardAndBatten(style) => {
-                let config = StileRail {
-                    top: style.height,
-                    top_rail: style.top_rail_width,
-                    bottom_rail: None,
-                    member: style.batten_width,
-                    member_kind: PartKind::Batten,
-                    target_on_centre: style.target_spacing,
-                };
-                stile_rail::layout_run(run, &config, base_top, &keep_clear, &mut parts);
-            }
-            Style::ShakerPanel(style) => {
-                let config = StileRail {
-                    top: style.height,
-                    top_rail: style.top_rail_width,
-                    bottom_rail: Some(style.bottom_rail_width),
-                    member: style.stile_width,
-                    member_kind: PartKind::Stile,
-                    target_on_centre: style.target_panel_width + style.stile_width,
-                };
-                stile_rail::layout_run(run, &config, base_top, &keep_clear, &mut parts);
-            }
+            Style::PictureFrame(style) => Solver::PictureFrame(style),
+            Style::BoardAndBatten(style) => Solver::StileRail(StileRail {
+                top: style.height,
+                top_rail: style.top_rail_width,
+                bottom_rail: None,
+                member: style.batten_width,
+                member_kind: PartKind::Batten,
+                target_on_centre: style.target_spacing,
+                thickness: style.thickness,
+            }),
+            Style::ShakerPanel(style) => Solver::StileRail(StileRail {
+                top: style.height,
+                top_rail: style.top_rail_width,
+                bottom_rail: Some(style.bottom_rail_width),
+                member: style.stile_width,
+                member_kind: PartKind::Stile,
+                target_on_centre: style.target_panel_width + style.stile_width,
+                thickness: style.thickness,
+            }),
         }
     }
 
+    /// The centre-to-centre spacing the user asked for.
+    fn target_pitch(&self) -> Length {
+        match self {
+            Solver::PictureFrame(style) => style.target_box_width + style.gap,
+            Solver::StileRail(config) => config.target_on_centre,
+        }
+    }
+
+    fn division(&self, run: &Run, zone: &Zone, base_top: Length) -> Option<Division> {
+        match self {
+            Solver::PictureFrame(style) => picture_frame::division(zone, style, base_top),
+            Solver::StileRail(config) => config.division(run, zone, base_top),
+        }
+    }
+
+    fn layout_run(
+        &self,
+        run: &Run,
+        counts: &[Option<i64>],
+        base_top: Length,
+        keep_clear: &[Rect],
+        parts: &mut Vec<Part>,
+    ) {
+        match self {
+            Solver::PictureFrame(style) => {
+                picture_frame::layout_run(run, style, counts, base_top, keep_clear, parts);
+            }
+            Solver::StileRail(config) => {
+                config.layout_run(run, counts, base_top, keep_clear, parts);
+            }
+        }
+    }
+}
+
+/// Lays out every wall. The project must already have passed validation.
+pub(crate) fn layout_project(project: &Project) -> (Vec<WallLayout>, Vec<Warning>) {
+    let design = &project.design;
+    let base_top = design.baseboard.height;
+    let solver = Solver::new(design);
+
+    // 1. Runs and zones for each wall.
+    let mut surfaces: Vec<Surface> = project
+        .walls
+        .iter()
+        .map(|wall| zones::analyze(wall, base_top, design.style.top()))
+        .collect();
+
+    // 2. How adjoining walls meet.
+    let reaches: Vec<(bool, bool)> = project
+        .walls
+        .iter()
+        .zip(&surfaces)
+        .map(|(wall, surface)| surface.reaches(wall.width))
+        .collect();
+    let joints = corners::resolve(&project.walls, &reaches);
+    for ((wall, surface), &(left, right)) in project.walls.iter().zip(&mut surfaces).zip(&joints) {
+        surface.set_joints(wall.width, left, right);
+    }
+
+    // 3. One bay count per zone, agreed across the whole room. The counts are
+    //    in wall, run, zone order, which step 4 walks in the same way.
+    let divisions: Vec<Option<Division>> = surfaces
+        .iter()
+        .flat_map(|surface| &surface.runs)
+        .flat_map(|run| {
+            let solver = &solver;
+            run.zones
+                .iter()
+                .map(move |zone| solver.division(run, zone, base_top))
+        })
+        .collect();
+    let counts = align::align(&divisions, solver.target_pitch());
+    let mut counts = counts.as_slice();
+
+    // 4. Parts.
+    let mut layouts = Vec::with_capacity(project.walls.len());
+    let mut warnings = Vec::new();
+    for ((wall, surface), &(left_joint, right_joint)) in
+        project.walls.iter().zip(&surfaces).zip(&joints)
+    {
+        let keep_clear: Vec<Rect> = surface
+            .small
+            .iter()
+            .map(|&(_, rect)| rect.inflate(CLEARANCE))
+            .collect();
+
+        let mut parts = Vec::new();
+        for run in &surface.runs {
+            if !design.baseboard.existing && base_top.is_positive() {
+                parts.push(baseboard(run, design));
+            }
+            let (run_counts, rest) = counts.split_at(run.zones.len());
+            counts = rest;
+            solver.layout_run(run, run_counts, base_top, &keep_clear, &mut parts);
+        }
+
+        warnings.extend(overlap_warnings(wall, surface, &parts, &project.units));
+        layouts.push(WallLayout {
+            wall_id: wall.id.clone(),
+            parts,
+            left_joint,
+            right_joint,
+        });
+    }
+    (layouts, warnings)
+}
+
+/// A new baseboard for one run. It is a profiled moulding, so corners are
+/// coped or mitered rather than butted.
+fn baseboard(run: &Run, design: &Design) -> Part {
+    let projection = design.baseboard.thickness;
+    let x0 = run.x0 - run.left.moulding_extension(projection);
+    let x1 = run.x1 + run.right.moulding_extension(projection);
+    let rect = Rect::new(x0, Length::ZERO, x1 - x0, design.baseboard.height);
+    Part::horizontal(PartKind::Baseboard, Material::Baseboard, rect)
+        .with_cuts([run.left.moulding_cut(), run.right.moulding_cut()])
+}
+
+/// One warning for each outlet, switch or vent that ended up under trim.
+fn overlap_warnings(
+    wall: &Wall,
+    surface: &Surface,
+    parts: &[Part],
+    units: &UnitPrefs,
+) -> Vec<Warning> {
     let mut warnings = Vec::new();
     for &(index, rect) in &surface.small {
         let Some(hit) = parts.iter().find(|part| part.rect.intersects(&rect)) else {
@@ -245,12 +369,7 @@ pub(crate) fn layout_wall(
             ),
         });
     }
-
-    let layout = WallLayout {
-        wall_id: wall.id.clone(),
-        parts,
-    };
-    (layout, warnings)
+    warnings
 }
 
 fn obstruction_name(kind: ObstructionKind) -> &'static str {
@@ -294,14 +413,6 @@ fn best_division<T>(
         }
     }
     best.map(|(_, candidate)| candidate)
-}
-
-/// `a / b` rounded to the nearest whole number; zero when `a` is negative.
-fn round_div(a: Length, b: Length) -> i64 {
-    if a.nm() <= 0 || b.nm() <= 0 {
-        return 0;
-    }
-    (a.nm() * 2 + b.nm()) / (b.nm() * 2)
 }
 
 fn count_hits(rects: &[Rect], keep_clear: &[Rect]) -> usize {

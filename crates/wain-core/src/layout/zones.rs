@@ -4,6 +4,8 @@ use crate::geometry::Rect;
 use crate::model::{ObstructionKind, Wall};
 use crate::units::Length;
 
+use super::corners::Joint;
+
 /// An `Other` obstruction at least this wide is handled like a window.
 const WIDE_OBSTRUCTION: Length = Length::mm(300);
 
@@ -46,6 +48,22 @@ pub(crate) struct Run {
     pub x0: Length,
     pub x1: Length,
     pub zones: Vec<Zone>,
+    /// What the run meets at each end. `Free` at a door casing, and at a wall
+    /// end until [`Surface::set_joints`] says otherwise.
+    pub left: Joint,
+    pub right: Joint,
+}
+
+impl Run {
+    /// The joints at the two ends of `zone`. Only a zone at the end of the
+    /// run can meet a corner.
+    pub fn joints(&self, zone: &Zone) -> (Joint, Joint) {
+        let at = |edge: Edge, joint: Joint| match edge {
+            Edge::RunEnd => joint,
+            Edge::Boundary => Joint::Free,
+        };
+        (at(zone.left, self.left), at(zone.right, self.right))
+    }
 }
 
 pub(crate) struct Surface {
@@ -53,6 +71,28 @@ pub(crate) struct Surface {
     /// Outlets, switches and similar within the treated area, with their
     /// index in `wall.obstructions`.
     pub small: Vec<(usize, Rect)>,
+}
+
+impl Surface {
+    /// Whether trim runs all the way to the wall's left and right ends,
+    /// rather than stopping at a door in the corner.
+    pub fn reaches(&self, wall_width: Length) -> (bool, bool) {
+        let left = self.runs.first().is_some_and(|run| run.x0 == Length::ZERO);
+        let right = self.runs.last().is_some_and(|run| run.x1 == wall_width);
+        (left, right)
+    }
+
+    /// Records what the wall's two ends meet. Ignored for an end the trim
+    /// does not reach.
+    pub fn set_joints(&mut self, wall_width: Length, left: Joint, right: Joint) {
+        let (reaches_left, reaches_right) = self.reaches(wall_width);
+        if reaches_left && let Some(run) = self.runs.first_mut() {
+            run.left = left;
+        }
+        if reaches_right && let Some(run) = self.runs.last_mut() {
+            run.right = right;
+        }
+    }
 }
 
 enum Class {
@@ -121,6 +161,8 @@ pub(crate) fn analyze(wall: &Wall, base_top: Length, top: Length) -> Surface {
             x0,
             x1,
             zones: zones_in_run(x0, x1, top, &unders),
+            left: Joint::Free,
+            right: Joint::Free,
         })
         .collect();
 
@@ -193,6 +235,7 @@ mod tests {
             width: Length::inches(width),
             height: Length::inches(96),
             obstructions,
+            corner: crate::model::Corner::None,
         }
     }
 

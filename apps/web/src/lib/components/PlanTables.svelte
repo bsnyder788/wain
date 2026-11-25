@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { formatLength, type Length, type Plan, type Profile, type UnitPrefs } from '#lib/engine/index.ts';
-	import { END_CUT_NAMES, MATERIAL_NAMES, PART_NAMES } from '#lib/labels.ts';
+	import { endCuts, MATERIAL_NAMES, PART_NAMES } from '#lib/labels.ts';
 
 	type Props = { plan: Plan; units: UnitPrefs };
 	let { plan, units }: Props = $props();
@@ -36,7 +36,7 @@
 							<td>{PART_NAMES[item.kind]}</td>
 							<td>{profileName(item.profile)}</td>
 							<td class="num">{fmt(item.length)}</td>
-							<td>{END_CUT_NAMES[item.end_cut]}</td>
+							<td>{endCuts(item.cuts)}</td>
 							<td class="num">{item.quantity}</td>
 						</tr>
 					{/each}
@@ -44,8 +44,9 @@
 			</table>
 		</div>
 		<p class="note">
-			Mitered lengths are long point to long point. Check every measurement against the wall
-			before cutting.
+			Mitered lengths are to the long point; coped ends measure to the wall. Two different ends are
+			listed left then right as the piece sits on the wall. Check every measurement against the
+			wall before cutting.
 		</p>
 	{/if}
 </section>

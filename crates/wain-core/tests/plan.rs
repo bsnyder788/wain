@@ -1,8 +1,9 @@
 //! End-to-end checks of `plan()` against layouts worked out by hand.
 
 use wain_core::{
-    CutItem, Design, EndCut, Length, Material, Obstruction, ObstructionKind, Part, PartKind, Plan,
-    Project, Rect, StockOptions, Style, StyleKind, UnitPrefs, UnitSystem, WarningCode, plan,
+    Corner, CutItem, Design, EndCut, Joint, Length, Material, Obstruction, ObstructionKind, Part,
+    PartKind, Plan, Project, Rect, StockOptions, Style, StyleKind, UnitPrefs, UnitSystem,
+    WarningCode, plan,
 };
 
 fn inches(n: i64) -> Length {
@@ -21,12 +22,43 @@ fn imperial(style: StyleKind, wall_width: Length) -> Project {
     project
 }
 
+/// An imperial project with one wall per entry: its width in inches and how
+/// its right end meets the next wall.
+fn room(style: StyleKind, walls: &[(i64, Corner)]) -> Project {
+    let mut project = imperial(style, Length::ZERO);
+    let template = project.walls[0].clone();
+    project.walls = walls
+        .iter()
+        .enumerate()
+        .map(|(index, &(width, corner))| {
+            let mut wall = template.clone();
+            wall.id = format!("wall-{}", index + 1);
+            wall.name = format!("Wall {}", index + 1);
+            wall.width = inches(width);
+            wall.corner = corner;
+            wall
+        })
+        .collect();
+    project
+}
+
 fn obstruction(kind: ObstructionKind, x: Length, y: Length, w: Length, h: Length) -> Obstruction {
     Obstruction {
         kind,
         rect: Rect::new(x, y, w, h),
     }
 }
+
+/// The parts of one kind on one wall, by wall index.
+fn wall_parts(plan: &Plan, wall: usize, kind: PartKind) -> Vec<&Part> {
+    plan.walls[wall]
+        .parts
+        .iter()
+        .filter(|part| part.kind == kind)
+        .collect()
+}
+
+const SQUARE: [EndCut; 2] = [EndCut::Square, EndCut::Square];
 
 fn parts_of(plan: &Plan, kind: PartKind) -> Vec<&Part> {
     plan.walls
@@ -236,19 +268,21 @@ fn picture_frames_on_a_bare_twelve_foot_wall() {
     let plan = plan(&imperial(StyleKind::PictureFrame, Length::feet(12))).unwrap();
     assert!(plan.warnings.is_empty());
 
-    // Four boxes with 3 1/2" gaps: (144 - 5 * 3.5) / 4 = 31 5/8" wide.
+    // Five boxes with 3 1/2" gaps: (144 - 6 * 3.5) / 5 = 24.6" wide, nearer
+    // the 28" target than four boxes of 31.6". Cut to the nearest sixteenth.
     // Box height: chair rail underside at 31 1/2", baseboard at 5 1/4",
     // a gap top and bottom: 31.5 - 5.25 - 7 = 19 1/4".
     assert_eq!(
         cuts(&plan),
         [
             ("A", PartKind::ChairRail, inches(144), 1),
-            ("B", PartKind::FrameMoulding, frac(253, 8), 8),
-            ("C", PartKind::FrameMoulding, frac(77, 4), 8),
+            ("B", PartKind::FrameMoulding, frac(197, 8), 10),
+            ("C", PartKind::FrameMoulding, frac(77, 4), 10),
         ]
     );
-    let miters: Vec<EndCut> = plan.cut_list.iter().map(|item| item.end_cut).collect();
-    assert_eq!(miters, [EndCut::Square, EndCut::Miter, EndCut::Miter]);
+    let miter = [EndCut::FrameMiter, EndCut::FrameMiter];
+    let end_cuts: Vec<[EndCut; 2]> = plan.cut_list.iter().map(|item| item.cuts).collect();
+    assert_eq!(end_cuts, [SQUARE, miter, miter]);
 
     // The outer boxes sit one gap in from each corner.
     let frames = parts_of(&plan, PartKind::FrameMoulding);
@@ -257,18 +291,18 @@ fn picture_frames_on_a_bare_twelve_foot_wall() {
     assert_eq!(left, frac(7, 2));
     assert_eq!(right, inches(144) - frac(7, 2));
 
-    // All 16 pieces of moulding are accounted for in the stock plan.
+    // All 20 pieces of moulding are accounted for in the stock plan.
     let moulding = plan
         .stock
         .iter()
         .find(|group| group.profile.material == Material::PanelMoulding)
         .unwrap();
     let placed: usize = moulding.boards.iter().map(|board| board.cuts.len()).sum();
-    assert_eq!(placed, 16);
+    assert_eq!(placed, 20);
 }
 
 #[test]
-fn a_picture_frame_box_lines_up_under_a_window() {
+fn picture_frame_boxes_line_up_under_a_window() {
     let mut project = imperial(StyleKind::PictureFrame, Length::feet(12));
     project.walls[0].obstructions.push(obstruction(
         ObstructionKind::Window,
@@ -286,15 +320,17 @@ fn a_picture_frame_box_lines_up_under_a_window() {
         .collect();
     assert_eq!(rails, [inches(50), inches(54)]);
 
-    // One box under the window, exactly as wide as the casing, and shorter:
-    // 24 - 3.5 - 8.75 = 11 3/4" tall.
+    // Two boxes under the window, together exactly as wide as the casing:
+    // (40 - 3.5) / 2 = 18 1/4" each, and 24 - 3.5 - 8.75 = 11 3/4" tall.
     let frames = parts_of(&plan, PartKind::FrameMoulding);
     let under: Vec<&&Part> = frames
         .iter()
         .filter(|f| f.rect.x >= inches(50) && f.rect.right() <= inches(90))
         .collect();
-    assert_eq!(under.len(), 4);
-    assert!(under.iter().any(|f| f.length == inches(40)));
+    assert_eq!(under.len(), 8);
+    assert_eq!(under.iter().map(|f| f.rect.x).min(), Some(inches(50)));
+    assert_eq!(under.iter().map(|f| f.rect.right()).max(), Some(inches(90)));
+    assert!(under.iter().any(|f| f.length == frac(73, 4)));
     assert!(under.iter().any(|f| f.length == frac(47, 4)));
 
     // The box to its left ends one gap short of the casing.
@@ -500,6 +536,268 @@ fn parts_always_stay_inside_the_treated_area() {
 }
 
 #[test]
+fn an_inside_corner_butts_the_second_wall_into_the_first() {
+    let plan = plan(&room(
+        StyleKind::BoardAndBatten,
+        &[(144, Corner::Inside), (120, Corner::None)],
+    ))
+    .unwrap();
+    assert_eq!(
+        (plan.walls[0].left_joint, plan.walls[0].right_joint),
+        (Joint::Free, Joint::InsideThrough)
+    );
+    assert_eq!(
+        (plan.walls[1].left_joint, plan.walls[1].right_joint),
+        (Joint::InsideButt, Joint::Free)
+    );
+
+    // Wall 1 runs into the corner: its rail is the full 144". Wall 2 stops
+    // one 3/4" board thickness short: 119 1/4".
+    let rail_1 = wall_parts(&plan, 0, PartKind::TopRail)[0];
+    let rail_2 = wall_parts(&plan, 1, PartKind::TopRail)[0];
+    assert_eq!((rail_1.rect.x, rail_1.length), (Length::ZERO, inches(144)));
+    assert_eq!((rail_2.rect.x, rail_2.length), (frac(3, 4), frac(477, 4)));
+
+    // The last 3/4" of wall 1 is hidden behind wall 2's trim, so its corner
+    // batten is cut 3 1/4" wide to still show 2 1/2".
+    let battens_1 = wall_parts(&plan, 0, PartKind::Batten);
+    let corner = battens_1.last().unwrap();
+    assert_eq!(corner.rect.right(), inches(144));
+    assert_eq!(corner.rect.width, frac(13, 4));
+    // Wall 2's corner batten is a normal one, starting where its trim does.
+    let battens_2 = wall_parts(&plan, 1, PartKind::Batten);
+    assert_eq!(
+        (battens_2[0].rect.x, battens_2[0].rect.width),
+        (frac(3, 4), frac(5, 2))
+    );
+
+    // What shows on wall 1 is 143 1/4" wide: ten 2 1/2" faces and nine equal
+    // bays of (143.25 - 25) / 9.
+    let bay = (frac(573, 4) - frac(5, 2) * 10) / 9;
+    for pair in battens_1.windows(2) {
+        let gap = pair[1].rect.x - pair[0].rect.right();
+        assert!((gap - bay).nm().abs() < 10, "bay was {gap:?}");
+    }
+
+    assert_eq!(
+        cuts(&plan),
+        [
+            ("A", PartKind::Batten, frac(181, 4), 17),
+            ("B", PartKind::Batten, frac(181, 4), 1),
+            ("C", PartKind::TopRail, inches(144), 1),
+            ("D", PartKind::TopRail, frac(477, 4), 1),
+        ]
+    );
+    assert_eq!(plan.cut_list[1].profile.width, frac(13, 4));
+    assert!(plan.cut_list.iter().all(|item| item.cuts == SQUARE));
+}
+
+#[test]
+fn an_outside_corner_laps_the_battens_and_miters_the_rails() {
+    let plan = plan(&room(
+        StyleKind::BoardAndBatten,
+        &[(144, Corner::Outside), (120, Corner::None)],
+    ))
+    .unwrap();
+    assert_eq!(plan.walls[0].right_joint, Joint::OutsideThrough);
+    assert_eq!(plan.walls[1].left_joint, Joint::OutsideButt);
+
+    // Both rails run 3/4" past the corner to a miter with its long point on
+    // the face.
+    let rail_1 = wall_parts(&plan, 0, PartKind::TopRail)[0];
+    let rail_2 = wall_parts(&plan, 1, PartKind::TopRail)[0];
+    assert_eq!((rail_1.rect.x, rail_1.length), (Length::ZERO, frac(579, 4)));
+    assert_eq!(rail_1.cuts, [EndCut::Square, EndCut::OutsideMiter]);
+    assert_eq!((rail_2.rect.x, rail_2.length), (frac(-3, 4), frac(483, 4)));
+    assert_eq!(rail_2.cuts, [EndCut::OutsideMiter, EndCut::Square]);
+
+    // Wall 1's corner batten overhangs the corner by 3/4" to cover the edge
+    // of wall 2's, which is cut 3/4" narrower so both show 2 1/2".
+    let corner_1 = *wall_parts(&plan, 0, PartKind::Batten).last().unwrap();
+    assert_eq!(
+        (corner_1.rect.right(), corner_1.rect.width),
+        (frac(579, 4), frac(5, 2))
+    );
+    let corner_2 = wall_parts(&plan, 1, PartKind::Batten)[0];
+    assert_eq!(
+        (corner_2.rect.x, corner_2.rect.width),
+        (Length::ZERO, frac(7, 4))
+    );
+
+    assert_eq!(
+        cuts(&plan),
+        [
+            ("A", PartKind::Batten, frac(181, 4), 1),
+            ("B", PartKind::Batten, frac(181, 4), 17),
+            ("C", PartKind::TopRail, frac(579, 4), 1),
+            ("D", PartKind::TopRail, frac(483, 4), 1),
+        ]
+    );
+    assert_eq!(plan.cut_list[0].profile.width, frac(7, 4));
+}
+
+#[test]
+fn a_closed_room_treats_every_wall_the_same_way() {
+    let inside = Corner::Inside;
+    let plan = plan(&room(
+        StyleKind::BoardAndBatten,
+        &[(144, inside), (120, inside), (144, inside), (120, inside)],
+    ))
+    .unwrap();
+
+    // The last wall's corner leads back to the first, so every wall butts on
+    // its left and runs through on its right.
+    for wall in &plan.walls {
+        assert_eq!(
+            (wall.left_joint, wall.right_joint),
+            (Joint::InsideButt, Joint::InsideThrough)
+        );
+        for part in &wall.parts {
+            assert!(part.rect.x >= frac(3, 4), "{part:?} is inside the corner");
+        }
+    }
+
+    // Each rail is 3/4" short of its wall, and each wall has one wide corner
+    // batten: 9 + 7 + 9 + 7 normal battens and 4 wide ones.
+    assert_eq!(
+        cuts(&plan),
+        [
+            ("A", PartKind::Batten, frac(181, 4), 32),
+            ("B", PartKind::Batten, frac(181, 4), 4),
+            ("C", PartKind::TopRail, frac(573, 4), 2),
+            ("D", PartKind::TopRail, frac(477, 4), 2),
+        ]
+    );
+}
+
+#[test]
+fn shaker_rails_and_stiles_follow_the_corner_too() {
+    let plan = plan(&room(
+        StyleKind::ShakerPanel,
+        &[(144, Corner::Inside), (120, Corner::None)],
+    ))
+    .unwrap();
+    for kind in [PartKind::TopRail, PartKind::BottomRail] {
+        let rail_1 = wall_parts(&plan, 0, kind)[0];
+        let rail_2 = wall_parts(&plan, 1, kind)[0];
+        assert_eq!((rail_1.rect.x, rail_1.length), (Length::ZERO, inches(144)));
+        assert_eq!((rail_2.rect.x, rail_2.length), (frac(3, 4), frac(477, 4)));
+    }
+    // 3 1/2" stiles: the hidden corner one is 4 1/4" wide.
+    let corner = *wall_parts(&plan, 0, PartKind::Stile).last().unwrap();
+    assert_eq!(corner.rect.width, frac(17, 4));
+}
+
+#[test]
+fn mouldings_are_coped_inside_and_mitered_outside() {
+    let mut project = room(
+        StyleKind::PictureFrame,
+        &[
+            (144, Corner::Inside),
+            (120, Corner::Outside),
+            (96, Corner::None),
+        ],
+    );
+    project.design.baseboard.existing = false;
+    let plan = plan(&project).unwrap();
+
+    // Inside corner: both pieces measure to the wall, and the second is
+    // coped over the first. Outside corner: both run past the corner by the
+    // moulding's thickness (3/4" chair rail, 9/16" baseboard) to a miter.
+    let ends = |wall: usize, kind: PartKind| {
+        let part = wall_parts(&plan, wall, kind)[0];
+        (part.rect.x, part.length, part.cuts)
+    };
+    let (square, cope, miter) = (EndCut::Square, EndCut::Cope, EndCut::OutsideMiter);
+    assert_eq!(
+        ends(0, PartKind::ChairRail),
+        (Length::ZERO, inches(144), [square, square])
+    );
+    assert_eq!(
+        ends(1, PartKind::ChairRail),
+        (Length::ZERO, frac(483, 4), [cope, miter])
+    );
+    assert_eq!(
+        ends(2, PartKind::ChairRail),
+        (frac(-3, 4), frac(387, 4), [miter, square])
+    );
+    assert_eq!(
+        ends(1, PartKind::Baseboard),
+        (Length::ZERO, inches(120) + frac(9, 16), [cope, miter])
+    );
+    assert_eq!(
+        ends(2, PartKind::Baseboard),
+        (frac(-9, 16), inches(96) + frac(9, 16), [miter, square])
+    );
+
+    // The boxes are on the wall itself and still sit one gap from each end.
+    for (wall, width) in [(0, 144), (1, 120), (2, 96)] {
+        let frames = wall_parts(&plan, wall, PartKind::FrameMoulding);
+        assert_eq!(frames.iter().map(|f| f.rect.x).min(), Some(frac(7, 2)));
+        // Equal boxes can leave a few nanometres over at the far end.
+        let right = frames.iter().map(|f| f.rect.right()).max().unwrap();
+        let slack = inches(width) - frac(7, 2) - right;
+        assert!((0..10).contains(&slack.nm()), "right edge was {right:?}");
+    }
+}
+
+#[test]
+fn a_door_in_the_corner_leaves_the_other_wall_running_to_it() {
+    let mut project = room(
+        StyleKind::BoardAndBatten,
+        &[(144, Corner::Inside), (120, Corner::None)],
+    );
+    project.walls[0].obstructions.push(obstruction(
+        ObstructionKind::Door,
+        inches(108),
+        Length::ZERO,
+        inches(36),
+        inches(82),
+    ));
+    let plan = plan(&project).unwrap();
+
+    // Wall 1 has no trim in the corner for wall 2 to butt against.
+    assert_eq!(plan.walls[0].right_joint, Joint::Free);
+    assert_eq!(plan.walls[1].left_joint, Joint::Free);
+    let rail_2 = wall_parts(&plan, 1, PartKind::TopRail)[0];
+    assert_eq!((rail_2.rect.x, rail_2.length), (Length::ZERO, inches(120)));
+}
+
+#[test]
+fn a_lone_wall_ignores_its_corner_setting() {
+    let plain = imperial(StyleKind::BoardAndBatten, Length::feet(12));
+    let mut cornered = plain.clone();
+    cornered.walls[0].corner = Corner::Inside;
+    assert_eq!(plan(&plain).unwrap(), plan(&cornered).unwrap());
+}
+
+#[test]
+fn spacing_is_agreed_across_walls() {
+    let batten_count = |widths: &[Length]| -> Vec<usize> {
+        let mut project = room(
+            StyleKind::BoardAndBatten,
+            &vec![(0, Corner::None); widths.len()],
+        );
+        for (wall, &width) in project.walls.iter_mut().zip(widths) {
+            wall.width = width;
+        }
+        let plan = plan(&project).unwrap();
+        (0..widths.len())
+            .map(|wall| wall_parts(&plan, wall, PartKind::Batten).len())
+            .collect()
+    };
+    let (long, short) = (frac(179, 2), frac(115, 2));
+
+    // By itself a 57 1/2" wall takes four bays of about 11 1/4": a touch
+    // nearer the 16" target spacing than three bays of about 15 3/4".
+    assert_eq!(batten_count(&[short]), [5]);
+
+    // Two 89 1/2" walls land on five bays of about 15". Beside those, three
+    // bays on the short wall match far better than four, so it follows them.
+    assert_eq!(batten_count(&[long, long, short]), [6, 6, 4]);
+}
+
+#[test]
 fn invalid_projects_are_rejected_with_paths() {
     let paths = |project: &Project| -> Vec<String> {
         plan(project)
@@ -557,12 +855,14 @@ fn extreme_values_are_rejected_without_overflowing() {
             value,
         ));
         project.design.baseboard.height = value;
+        project.design.baseboard.thickness = value;
         if let Style::ShakerPanel(style) = &mut project.design.style {
             style.height = value;
             style.top_rail_width = value;
             style.bottom_rail_width = value;
             style.stile_width = value;
             style.target_panel_width = value;
+            style.thickness = value;
         }
         project.stock = StockOptions {
             lengths: vec![value],

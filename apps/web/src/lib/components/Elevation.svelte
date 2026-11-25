@@ -28,6 +28,23 @@
 	const margin = $derived(text * 3);
 	const fmt = (length: Length) => formatLength(length, units);
 
+	// Where another wall's boards meet this one, they are seen edge-on as a
+	// strip one board thick: inside the wall end at an inside corner, and just
+	// past it where this wall stops behind them at an outside corner.
+	const neighbours = $derived.by(() => {
+		const style = design.style;
+		if (!layout || style.kind === 'picture_frame') return [];
+		const t = mm(style.thickness);
+		const strips: { x: number; side: string }[] = [];
+		if (layout.left_joint.startsWith('inside')) strips.push({ x: 0, side: 'left' });
+		if (layout.left_joint === 'outside_butt') strips.push({ x: -t, side: 'left' });
+		if (layout.right_joint.startsWith('inside')) strips.push({ x: width - t, side: 'right' });
+		if (layout.right_joint === 'outside_butt') strips.push({ x: width, side: 'right' });
+		const bottom = mm(design.baseboard.height);
+		const top = mm(style.height);
+		return strips.map((strip) => ({ ...strip, y: height - top, width: t, height: top - bottom }));
+	});
+
 	// One label per distinct part per wall keeps the drawing readable.
 	const labelled = $derived.by(() => {
 		const seen = new Set<string>();
@@ -64,6 +81,12 @@
 			width={mm(part.rect.width)}
 			height={mm(part.rect.height)}
 		/>
+	{/each}
+
+	{#each neighbours as strip (strip.side)}
+		<rect class="neighbour" x={strip.x} y={strip.y} width={strip.width} height={strip.height}>
+			<title>Edge of the adjoining wall's trim</title>
+		</rect>
 	{/each}
 
 	{#each wall.obstructions as obstruction, index (index)}
@@ -137,6 +160,11 @@
 	}
 	.part {
 		fill: var(--trim);
+		stroke: var(--line);
+		stroke-width: 1;
+	}
+	.neighbour {
+		fill: var(--line-soft);
 		stroke: var(--line);
 		stroke-width: 1;
 	}

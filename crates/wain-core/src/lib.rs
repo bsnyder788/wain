@@ -26,8 +26,10 @@ use serde::{Deserialize, Serialize};
 
 pub use cutlist::CutItem;
 pub use geometry::Rect;
-pub use layout::{EndCut, Material, Part, PartKind, Profile, WallLayout, Warning, WarningCode};
-pub use model::{Obstruction, ObstructionKind, Project, StockOptions, Wall};
+pub use layout::{
+    EndCut, Joint, Material, Part, PartKind, Profile, WallLayout, Warning, WarningCode,
+};
+pub use model::{Corner, Obstruction, ObstructionKind, Project, StockOptions, Wall};
 pub use stock::{StockBoard, StockCut, StockGroup, StockPurchase};
 pub use style::{Baseboard, BoardAndBatten, Design, PictureFrame, ShakerPanel, Style, StyleKind};
 pub use units::{Length, ParseLengthError, UnitPrefs, UnitSystem, format_length, parse_length};
@@ -51,13 +53,7 @@ pub struct Plan {
 pub fn plan(project: &Project) -> Result<Plan, PlanError> {
     validate::validate(project)?;
 
-    let mut warnings = Vec::new();
-    let mut walls = Vec::with_capacity(project.walls.len());
-    for wall in &project.walls {
-        let (layout, wall_warnings) = layout::layout_wall(wall, &project.design, &project.units);
-        walls.push(layout);
-        warnings.extend(wall_warnings);
-    }
+    let (mut walls, mut warnings) = layout::layout_project(project);
 
     let cut_list = cutlist::build(&mut walls, project.stock.cut_precision);
     let (stock, stock_warnings) = stock::plan(&cut_list, &project.stock, &project.units);

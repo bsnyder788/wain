@@ -16,6 +16,9 @@ pub struct Design {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Baseboard {
     pub height: Length,
+    /// How far the baseboard stands off the wall. Sets the miter length at
+    /// outside corners when the baseboard is new.
+    pub thickness: Length,
     /// An existing baseboard stays in place and is left off the cut list.
     pub existing: bool,
 }
@@ -74,6 +77,9 @@ pub struct PictureFrame {
     pub chair_rail_height: Length,
     /// Face width of the chair rail.
     pub chair_rail_width: Length,
+    /// How far the chair rail stands off the wall. Sets the miter length at
+    /// outside corners.
+    pub chair_rail_thickness: Length,
     /// Face width of the panel moulding that forms each box.
     pub moulding_width: Length,
     /// Space between boxes, and between a box and the baseboard, chair rail,
@@ -94,6 +100,8 @@ pub struct BoardAndBatten {
     pub batten_width: Length,
     /// Preferred centre-to-centre batten spacing.
     pub target_spacing: Length,
+    /// Thickness of the boards. Sets how trim overlaps at corners.
+    pub thickness: Length,
 }
 
 /// Flat stiles and rails applied to the wall so the wall itself reads as
@@ -109,6 +117,8 @@ pub struct ShakerPanel {
     pub stile_width: Length,
     /// Preferred clear width of each panel between stiles.
     pub target_panel_width: Length,
+    /// Thickness of the boards. Sets how trim overlaps at corners.
+    pub thickness: Length,
 }
 
 impl Design {
@@ -121,6 +131,7 @@ impl Design {
             StyleKind::PictureFrame => Style::PictureFrame(PictureFrame {
                 chair_rail_height: pick(Length::inches(34), 860),
                 chair_rail_width: pick(Length::inch_fraction(5, 2), 60),
+                chair_rail_thickness: pick(Length::inch_fraction(3, 4), 20),
                 moulding_width: pick(Length::inch_fraction(9, 8), 30),
                 gap: pick(Length::inch_fraction(7, 2), 90),
                 target_box_width: pick(Length::inches(28), 700),
@@ -130,6 +141,7 @@ impl Design {
                 top_rail_width: pick(Length::inch_fraction(7, 2), 90),
                 batten_width: pick(Length::inch_fraction(5, 2), 65),
                 target_spacing: pick(Length::inches(16), 400),
+                thickness: pick(Length::inch_fraction(3, 4), 18),
             }),
             StyleKind::ShakerPanel => Style::ShakerPanel(ShakerPanel {
                 height: pick(Length::inches(40), 1000),
@@ -137,12 +149,14 @@ impl Design {
                 bottom_rail_width: pick(Length::inch_fraction(7, 2), 90),
                 stile_width: pick(Length::inch_fraction(7, 2), 90),
                 target_panel_width: pick(Length::inches(18), 450),
+                thickness: pick(Length::inch_fraction(3, 4), 18),
             }),
         };
         Design {
             style,
             baseboard: Baseboard {
                 height: pick(Length::inch_fraction(21, 4), 120),
+                thickness: pick(Length::inch_fraction(9, 16), 15),
                 existing: true,
             },
         }

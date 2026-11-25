@@ -35,6 +35,12 @@
 			hint="Floor to top of rail"
 		/>
 		<LengthInput label="Chair rail width" bind:value={style.chair_rail_width} {units} />
+		<LengthInput
+			label="Chair rail thickness"
+			bind:value={style.chair_rail_thickness}
+			{units}
+			hint="Used at outside corners"
+		/>
 		<LengthInput label="Moulding width" bind:value={style.moulding_width} {units} />
 		<LengthInput label="Gap" bind:value={style.gap} {units} hint="Around every box" />
 		<LengthInput
@@ -53,6 +59,12 @@
 			{units}
 			hint="Centre to centre"
 		/>
+		<LengthInput
+			label="Board thickness"
+			bind:value={style.thickness}
+			{units}
+			hint="Sets the overlap at corners"
+		/>
 	{:else}
 		<LengthInput label="Height" bind:value={style.height} {units} hint="Floor to top of rail" />
 		<LengthInput label="Top rail width" bind:value={style.top_rail_width} {units} />
@@ -64,8 +76,22 @@
 			{units}
 			hint="Between stiles"
 		/>
+		<LengthInput
+			label="Board thickness"
+			bind:value={style.thickness}
+			{units}
+			hint="Sets the overlap at corners"
+		/>
 	{/if}
 	<LengthInput label="Baseboard height" bind:value={design.baseboard.height} {units} />
+	{#if !design.baseboard.existing}
+		<LengthInput
+			label="Baseboard thickness"
+			bind:value={design.baseboard.thickness}
+			{units}
+			hint="Used at outside corners"
+		/>
+	{/if}
 </div>
 
 <label class="check">

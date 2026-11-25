@@ -21,6 +21,9 @@ const MAX_STOCK_LENGTH: Length = Length::mm(10_000);
 const MIN_STOCK_LENGTH: Length = Length::mm(300);
 /// Narrowest allowed trim face.
 const MIN_FACE: Length = Length::mm(5);
+/// Trim stock is never thinner or thicker than this.
+const MIN_THICKNESS: Length = Length::mm(1);
+const MAX_THICKNESS: Length = Length::mm(100);
 /// Smallest allowed target spacing; keeps member counts bounded.
 const MIN_SPACING: Length = Length::mm(50);
 const MAX_KERF: Length = Length::mm(15);
@@ -162,7 +165,23 @@ fn check_design(check: &mut Checker, design: &Design, lowest_ceiling: Option<Len
         limit,
         "baseboard height",
     );
+    check.range(
+        "design.baseboard.thickness",
+        design.baseboard.thickness,
+        MIN_THICKNESS,
+        MAX_THICKNESS,
+        "baseboard thickness",
+    );
 
+    let thickness = |check: &mut Checker, field: &str, value: Length| {
+        check.range(
+            &format!("design.style.{field}"),
+            value,
+            MIN_THICKNESS,
+            MAX_THICKNESS,
+            &field.replace('_', " "),
+        );
+    };
     let face = |check: &mut Checker, field: &str, value: Length| {
         check.range(
             &format!("design.style.{field}"),
@@ -178,6 +197,7 @@ fn check_design(check: &mut Checker, design: &Design, lowest_ceiling: Option<Len
     // is known to be in range, so hostile input cannot overflow the sum.
     let (top_field, top, parts_ok, rails) = match &design.style {
         Style::PictureFrame(s) => {
+            thickness(check, "chair_rail_thickness", s.chair_rail_thickness);
             let mut ok = face(check, "chair_rail_width", s.chair_rail_width);
             ok &= face(check, "moulding_width", s.moulding_width);
             ok &= check.range("design.style.gap", s.gap, Length::ZERO, limit, "gap");
@@ -196,6 +216,7 @@ fn check_design(check: &mut Checker, design: &Design, lowest_ceiling: Option<Len
             )
         }
         Style::BoardAndBatten(s) => {
+            thickness(check, "thickness", s.thickness);
             let mut ok = face(check, "top_rail_width", s.top_rail_width);
             ok &= face(check, "batten_width", s.batten_width);
             ok &= check.range(
@@ -208,6 +229,7 @@ fn check_design(check: &mut Checker, design: &Design, lowest_ceiling: Option<Len
             ("height", s.height, ok, [s.top_rail_width, Length::ZERO])
         }
         Style::ShakerPanel(s) => {
+            thickness(check, "thickness", s.thickness);
             let mut ok = face(check, "top_rail_width", s.top_rail_width);
             ok &= face(check, "bottom_rail_width", s.bottom_rail_width);
             ok &= face(check, "stile_width", s.stile_width);

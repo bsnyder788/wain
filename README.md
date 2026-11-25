@@ -56,11 +56,28 @@ fresh clone needs it once before the web app will build.
   into *zones* of constant height (full height, or under a window). Each style
   fills a zone with equally spaced members.
 - Styles so far: picture frame, board and batten, shaker panel.
-- Spacing shifts by a bay or two to keep trim off outlets and switches; when
-  nothing clears, the plan carries a warning instead.
+- Spacing is agreed across the whole room: every zone picks the bay count
+  nearest a shared spacing that starts at the user's target and settles
+  halfway toward what the walls can actually achieve
+  (`layout/align.rs`).
+- Spacing then shifts by a bay or two to keep trim off outlets and switches;
+  when nothing clears, the plan carries a warning instead.
+- Walls are listed in order around the room, and each wall says how its right
+  end meets the next (`Corner`). Where two trimmed walls meet, the earlier
+  wall's trim runs through and the next one butts against it
+  (`layout/corners.rs`):
+  - Flat boards overlap by the board thickness. Members are spaced on the
+    *visible* face, so every wall shows full-width end members and equal
+    bays; the hidden overlap only changes cut sizes (a wider corner batten
+    on the through wall at an inside corner, a narrower one behind the lap at
+    an outside corner). Rails butt inside and are mitered outside.
+  - Profiled mouldings (chair rail, new baseboard) are coped inside and
+    mitered outside.
+  - A door in the corner cancels the joint, so the other wall runs to the
+    wall.
 - Stock packing picks a length for each board, so one long rail does not force
   short pieces onto long stock. Parts longer than any stock are split and
   flagged as needing a joint.
 
-Not handled yet: corner joints between adjoining walls (lengths are wall to
-wall), aligning panels across walls, stairs, and sheet goods.
+Not handled yet: choosing which wall runs through at a corner (it follows
+wall order), corners that are out of square, stairs, and sheet goods.

@@ -32,6 +32,7 @@ impl Project {
                 width,
                 height,
                 obstructions: Vec::new(),
+                corner: Corner::None,
             }],
             design: Design::default_for(StyleKind::BoardAndBatten, system),
             stock: StockOptions::default_for(system),
@@ -50,6 +51,25 @@ pub struct Wall {
     /// Floor to ceiling.
     pub height: Length,
     pub obstructions: Vec<Obstruction>,
+    /// How this wall's right-hand end meets the next wall in the project.
+    /// The last wall's corner leads back to the first, closing the room.
+    pub corner: Corner,
+}
+
+/// What happens at the right-hand end of a wall. Walls are listed in order
+/// going around the room, left to right as you face each one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum Corner {
+    /// The trim simply ends: at a doorway, a wall that is not being trimmed,
+    /// or the end of the project.
+    #[default]
+    None,
+    /// The next wall turns toward the room (a normal room corner).
+    Inside,
+    /// The next wall turns away from the room, as around a chimney breast.
+    Outside,
 }
 
 /// Something on the wall that trim has to stop at or work around.

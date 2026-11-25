@@ -13,7 +13,8 @@ import {
 	type UnitPrefs
 } from '#lib/engine/index.ts';
 
-const PROJECT_KEY = 'wain.project.v1';
+// Bump the version when the project shape changes; older saves are dropped.
+const PROJECT_KEY = 'wain.project.v2';
 const UNITS_KEY = 'wain.units.v1';
 
 // Filled in by `startSession()`, which the root layout runs before any page
@@ -99,15 +100,22 @@ export function setStyle(kind: StyleKind) {
 
 let nextId = 0;
 
+/**
+ * Adds a wall after the last one. Walls go around the room in order, so the
+ * previous wall is assumed to turn an inside corner into the new one; the
+ * user can change that on the previous wall.
+ */
 export function addWall() {
 	const { walls } = session.project;
 	const last = walls[walls.length - 1];
+	if (last.corner === 'none') last.corner = 'inside';
 	walls.push({
 		id: `wall-${Date.now().toString(36)}-${nextId++}`,
 		name: `Wall ${walls.length + 1}`,
 		width: last.width,
 		height: last.height,
-		obstructions: []
+		obstructions: [],
+		corner: 'none'
 	});
 	return walls.length - 1;
 }

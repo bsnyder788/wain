@@ -6,11 +6,18 @@
 		type UnitPrefs,
 		type Wall
 	} from '#lib/engine/index.ts';
-	import { OBSTRUCTION_NAMES } from '#lib/labels.ts';
+	import { CORNER_NAMES, OBSTRUCTION_NAMES } from '#lib/labels.ts';
 	import LengthInput from './LengthInput.svelte';
 
-	type Props = { wall: Wall; units: UnitPrefs };
-	let { wall = $bindable(), units }: Props = $props();
+	type Props = {
+		wall: Wall;
+		units: UnitPrefs;
+		/** Name of the wall this one's right end leads to, if there is one. */
+		nextWall?: string;
+	};
+	let { wall = $bindable(), units, nextWall }: Props = $props();
+
+	const CORNERS = Object.keys(CORNER_NAMES) as (keyof typeof CORNER_NAMES)[];
 
 	const KINDS = Object.keys(OBSTRUCTION_NAMES) as ObstructionKind[];
 
@@ -48,6 +55,17 @@
 	</label>
 	<LengthInput label="Width" bind:value={wall.width} {units} hint="Corner to corner" />
 	<LengthInput label="Ceiling height" bind:value={wall.height} {units} />
+	{#if nextWall}
+		<label class="field wide">
+			<span class="field-label">Right-hand end</span>
+			<select bind:value={wall.corner}>
+				{#each CORNERS as corner (corner)}
+					<option value={corner}>{CORNER_NAMES[corner](nextWall)}</option>
+				{/each}
+			</select>
+			<span class="field-hint">Walls go around the room in order, left to right.</span>
+		</label>
+	{/if}
 </div>
 
 <h3>Doors, windows and outlets</h3>

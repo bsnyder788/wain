@@ -21,10 +21,12 @@ import type { UnitSystem } from './bindings/UnitSystem';
 
 export type { Baseboard } from './bindings/Baseboard';
 export type { BoardAndBatten } from './bindings/BoardAndBatten';
+export type { Corner } from './bindings/Corner';
 export type { CutItem } from './bindings/CutItem';
 export type { Design } from './bindings/Design';
 export type { EndCut } from './bindings/EndCut';
 export type { Issue } from './bindings/Issue';
+export type { Joint } from './bindings/Joint';
 export type { Length } from './bindings/Length';
 export type { Material } from './bindings/Material';
 export type { Obstruction } from './bindings/Obstruction';
