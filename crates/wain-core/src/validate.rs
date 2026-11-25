@@ -8,7 +8,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Project, StockOptions, Wall};
+use crate::model::{Project, StockOptions, Wall, WallPhoto};
 use crate::style::{Design, Style};
 use crate::units::Length;
 
@@ -27,6 +27,10 @@ const MAX_THICKNESS: Length = Length::mm(100);
 /// Smallest allowed target spacing; keeps member counts bounded.
 const MIN_SPACING: Length = Length::mm(50);
 const MAX_KERF: Length = Length::mm(15);
+const MAX_IMAGE_ID_LENGTH: usize = 64;
+const MAX_IMAGE_SIDE: u32 = 20_000;
+/// How far outside the image a wall corner may be placed, in image sizes.
+const MAX_CORNER_OVERHANG: f64 = 4.0;
 const MAX_CUT_PRECISION: Length = Length::mm(30);
 
 /// One problem with a project, located by a JSON-style path such as
@@ -128,6 +132,10 @@ fn check_wall(check: &mut Checker, path: &str, wall: &Wall) {
         "wall height",
     );
 
+    if let Some(photo) = &wall.photo {
+        check_photo(check, &format!("{path}.photo"), photo);
+    }
+
     if wall.obstructions.len() > MAX_OBSTRUCTIONS_PER_WALL {
         check.fail(
             format!("{path}.obstructions"),
@@ -152,6 +160,33 @@ fn check_wall(check: &mut Checker, path: &str, wall: &Wall) {
         {
             check.fail(path, "must fit within the wall");
         }
+    }
+}
+
+/// Checks only that the photo record is sane. Whether the corners outline a
+/// usable shape is the preview's concern, not the plan's: a half-placed
+/// corner must not stop the cut list from updating.
+fn check_photo(check: &mut Checker, path: &str, photo: &WallPhoto) {
+    let id = &photo.image_id;
+    let id_ok = !id.is_empty()
+        && id.len() <= MAX_IMAGE_ID_LENGTH
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if !id_ok {
+        check.fail(format!("{path}.image_id"), "is not a valid image id");
+    }
+    let side_ok = |side: u32| (1..=MAX_IMAGE_SIDE).contains(&side);
+    if !side_ok(photo.width) || !side_ok(photo.height) {
+        check.fail(path, "image size is out of range");
+    }
+    let range = -MAX_CORNER_OVERHANG..=1.0 + MAX_CORNER_OVERHANG;
+    if photo
+        .corners
+        .iter()
+        .any(|p| !range.contains(&p.x) || !range.contains(&p.y))
+    {
+        check.fail(format!("{path}.corners"), "are too far outside the photo");
     }
 }
 

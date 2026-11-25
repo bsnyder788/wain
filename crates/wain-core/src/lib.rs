@@ -17,6 +17,7 @@ pub mod cutlist;
 pub mod geometry;
 pub mod layout;
 pub mod model;
+pub mod perspective;
 pub mod stock;
 pub mod style;
 pub mod units;
@@ -29,7 +30,8 @@ pub use geometry::Rect;
 pub use layout::{
     EndCut, Joint, Material, Part, PartKind, Profile, WallLayout, Warning, WarningCode,
 };
-pub use model::{Corner, Obstruction, ObstructionKind, Project, StockOptions, Wall};
+pub use model::{Corner, Obstruction, ObstructionKind, Project, StockOptions, Wall, WallPhoto};
+pub use perspective::{Homography, Point, QuadError};
 pub use stock::{StockBoard, StockCut, StockGroup, StockPurchase};
 pub use style::{Baseboard, BoardAndBatten, Design, PictureFrame, ShakerPanel, Style, StyleKind};
 pub use units::{Length, ParseLengthError, UnitPrefs, UnitSystem, format_length, parse_length};

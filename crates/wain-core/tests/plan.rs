@@ -2,8 +2,8 @@
 
 use wain_core::{
     Corner, CutItem, Design, EndCut, Joint, Length, Material, Obstruction, ObstructionKind, Part,
-    PartKind, Plan, Project, Rect, StockOptions, Style, StyleKind, UnitPrefs, UnitSystem,
-    WarningCode, plan,
+    PartKind, Plan, Point, Project, Rect, StockOptions, Style, StyleKind, UnitPrefs, UnitSystem,
+    WallPhoto, WarningCode, plan,
 };
 
 fn inches(n: i64) -> Length {
@@ -838,6 +838,70 @@ fn invalid_projects_are_rejected_with_paths() {
         style.height = inches(10); // rails alone are 7" over a 5 1/4" baseboard
     }
     assert_eq!(paths(&project), ["design.style.height"]);
+}
+
+fn photo() -> WallPhoto {
+    WallPhoto {
+        image_id: "3f2c1a9e-77aa-4c0e-9d51-0b1d2e3f4a5b".into(),
+        width: 2048,
+        height: 1536,
+        corners: [
+            Point::new(0.1, 0.1),
+            Point::new(0.9, 0.2),
+            Point::new(0.9, 0.8),
+            Point::new(0.1, 0.9),
+        ],
+    }
+}
+
+#[test]
+fn a_photo_does_not_change_the_plan() {
+    let plain = imperial(StyleKind::BoardAndBatten, Length::feet(12));
+    let mut pictured = plain.clone();
+    pictured.walls[0].photo = Some(photo());
+    assert_eq!(plan(&plain).unwrap(), plan(&pictured).unwrap());
+
+    // Corners that are crossed over, as they can be mid-drag, are the
+    // preview's problem and still must not block the plan.
+    let mut crossed = photo();
+    crossed.corners.swap(0, 1);
+    pictured.walls[0].photo = Some(crossed);
+    assert!(plan(&pictured).is_ok());
+}
+
+#[test]
+fn a_bad_photo_record_is_rejected() {
+    let paths = |edit: &dyn Fn(&mut WallPhoto)| -> Vec<String> {
+        let mut project = imperial(StyleKind::BoardAndBatten, Length::feet(12));
+        let mut bad = photo();
+        edit(&mut bad);
+        project.walls[0].photo = Some(bad);
+        let issues = plan(&project).unwrap_err().issues;
+        issues.into_iter().map(|issue| issue.path).collect()
+    };
+    assert_eq!(
+        paths(&|p| p.image_id = "../etc/passwd".into()),
+        ["walls[0].photo.image_id"]
+    );
+    assert_eq!(paths(&|p| p.image_id.clear()), ["walls[0].photo.image_id"]);
+    assert_eq!(paths(&|p| p.width = 0), ["walls[0].photo"]);
+    assert_eq!(
+        paths(&|p| p.corners[2] = Point::new(1e9, 0.5)),
+        ["walls[0].photo.corners"]
+    );
+    assert_eq!(
+        paths(&|p| p.corners[0].y = f64::NAN),
+        ["walls[0].photo.corners"]
+    );
+}
+
+#[test]
+fn projects_saved_before_photos_existed_still_load() {
+    let project = imperial(StyleKind::BoardAndBatten, Length::feet(12));
+    let mut json: serde_json::Value = serde_json::to_value(&project).unwrap();
+    json["walls"][0].as_object_mut().unwrap().remove("photo");
+    let loaded: Project = serde_json::from_value(json).unwrap();
+    assert_eq!(loaded, project);
 }
 
 #[test]

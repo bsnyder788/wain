@@ -6,12 +6,14 @@
  */
 import {
 	defaultDesign,
-	planProject,
+	normalizeProject,
 	starterProject,
 	type Project,
 	type StyleKind,
-	type UnitPrefs
+	type UnitPrefs,
+	type Wall
 } from '#lib/engine/index.ts';
+import { deletePhoto, importPhoto } from '#lib/photos.ts';
 
 // Bump the version when the project shape changes; older saves are dropped.
 const PROJECT_KEY = 'wain.project.v2';
@@ -48,21 +50,13 @@ function unitsForLocale(): UnitPrefs {
 	};
 }
 
-/** True when the engine accepts the value as a project at all. */
-function isProject(value: unknown): value is Project {
-	try {
-		planProject(value as Project);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
 /** Restores the saved project, or starts a new one. Needs the engine loaded. */
 export function startSession() {
 	const units = read<UnitPrefs>(UNITS_KEY) ?? unitsForLocale();
-	const saved = read<unknown>(PROJECT_KEY);
-	session.project = isProject(saved) ? saved : newProject(units);
+	// A save from an older version may lack newer fields; the engine fills
+	// them in, or rejects the save if it is not a project at all.
+	const saved = normalizeProject(read<unknown>(PROJECT_KEY));
+	session.project = saved ?? newProject(units);
 
 	$effect.root(() => {
 		$effect(() => write(PROJECT_KEY, session.project));
@@ -74,7 +68,37 @@ function newProject(units: UnitPrefs): Project {
 }
 
 export function resetProject() {
+	for (const wall of session.project.walls) forgetPhoto(wall);
 	session.project = newProject(session.project.units);
+}
+
+/** Deletes a wall's stored image. Failure only leaves an orphan behind. */
+function forgetPhoto(wall: Wall) {
+	const id = wall.photo?.image_id;
+	if (id) deletePhoto(id).catch(() => {});
+}
+
+/**
+ * Attaches a photo to a wall, replacing any it had. The corners start as an
+ * inset rectangle for the user to drag onto the real corners of the wall.
+ */
+export async function setPhoto(wall: Wall, file: Blob) {
+	const stored = await importPhoto(file);
+	forgetPhoto(wall);
+	wall.photo = {
+		...stored,
+		corners: [
+			{ x: 0.15, y: 0.15 },
+			{ x: 0.85, y: 0.15 },
+			{ x: 0.85, y: 0.85 },
+			{ x: 0.15, y: 0.85 }
+		]
+	};
+}
+
+export function removePhoto(wall: Wall) {
+	forgetPhoto(wall);
+	wall.photo = null;
 }
 
 /**
@@ -115,12 +139,15 @@ export function addWall() {
 		width: last.width,
 		height: last.height,
 		obstructions: [],
-		corner: 'none'
+		corner: 'none',
+		photo: null
 	});
 	return walls.length - 1;
 }
 
 export function removeWall(index: number) {
 	const { walls } = session.project;
-	if (walls.length > 1) walls.splice(index, 1);
+	if (walls.length <= 1) return;
+	forgetPhoto(walls[index]);
+	walls.splice(index, 1);
 }

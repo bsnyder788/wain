@@ -236,6 +236,7 @@ mod tests {
             height: Length::inches(96),
             obstructions,
             corner: crate::model::Corner::None,
+            photo: None,
         }
     }
 

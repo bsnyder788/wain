@@ -81,3 +81,19 @@ fresh clone needs it once before the web app will build.
 
 Not handled yet: choosing which wall runs through at a corner (it follows
 wall order), corners that are out of square, stairs, and sheet goods.
+
+## Photo preview
+
+- The user marks a wall's four corners on a photo. `wain-core`'s
+  `perspective` module turns those into a homography between the wall's
+  elevation and the photo (closed form, no solver), which the web app uses to
+  draw the plan's parts over the photo and to turn a drag on the photo into
+  an obstruction's position on the wall.
+- `Wall.photo` holds only the image id, its pixel size and the corners (as
+  fractions of the image). Layout never reads it, and half-placed corners do
+  not block the plan.
+- Images live in the browser's IndexedDB for now (`apps/web/src/lib/photos.ts`).
+  On import they are scaled to at most 2048 px and re-encoded, which also
+  strips metadata such as GPS location. Cloud storage arrives with accounts.
+- Lens distortion is ignored, and the overlay is a flat sketch rather than a
+  rendering.

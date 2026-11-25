@@ -6,7 +6,9 @@
 //! stays typed without a second, hand-written schema. Lengths are plain
 //! numbers of nanometres on the JavaScript side.
 
-use wain_core::{Design, Length, PlanError, Project, StyleKind, UnitPrefs, UnitSystem};
+use wain_core::{
+    Design, Homography, Length, PlanError, Point, Project, StyleKind, UnitPrefs, UnitSystem,
+};
 use wasm_bindgen::prelude::*;
 
 fn from_json<T: serde::de::DeserializeOwned>(json: &str, what: &str) -> Result<T, JsError> {
@@ -27,6 +29,38 @@ pub fn plan(project_json: &str) -> Result<String, JsError> {
         Ok(plan) => format!(r#"{{"ok":{}}}"#, to_json(&plan)),
         Err(error) => format!(r#"{{"error":{}}}"#, to_json::<PlanError>(&error)),
     })
+}
+
+/// Re-serializes a project so that every field is present. Projects saved by
+/// an older version of the app can lack fields added since; this fills them
+/// with their defaults. Throws if the input is not a project at all.
+#[wasm_bindgen]
+pub fn normalize_project(project_json: &str) -> Result<String, JsError> {
+    let project: Project = from_json(project_json, "project")?;
+    Ok(to_json(&project))
+}
+
+/// The transform between a wall and a photo of it, as a `Homography` in
+/// JSON. `corners_json` holds the wall's four corners in the photo, ordered
+/// top-left, top-right, bottom-right, bottom-left. Throws when the corners do
+/// not outline a wall.
+#[wasm_bindgen]
+pub fn wall_homography(
+    width_nm: f64,
+    height_nm: f64,
+    corners_json: &str,
+) -> Result<String, JsError> {
+    let corners: [Point; 4] = from_json(corners_json, "corners")?;
+    if !width_nm.is_finite() || !height_nm.is_finite() {
+        return Err(JsError::new("the wall size is not a finite number"));
+    }
+    let (width, height) = (
+        Length::from_nm(width_nm.round() as i64),
+        Length::from_nm(height_nm.round() as i64),
+    );
+    Homography::for_wall(width, height, &corners)
+        .map(|homography| to_json(&homography))
+        .map_err(|error| JsError::new(&error.to_string()))
 }
 
 /// A one-wall starter project. `system` is `"imperial"` or `"metric"`.

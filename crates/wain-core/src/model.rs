@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::geometry::Rect;
+use crate::perspective::Point;
 use crate::style::{Design, StyleKind};
 use crate::units::{Length, UnitPrefs, UnitSystem};
 
@@ -33,6 +34,7 @@ impl Project {
                 height,
                 obstructions: Vec::new(),
                 corner: Corner::None,
+                photo: None,
             }],
             design: Design::default_for(StyleKind::BoardAndBatten, system),
             stock: StockOptions::default_for(system),
@@ -54,6 +56,26 @@ pub struct Wall {
     /// How this wall's right-hand end meets the next wall in the project.
     /// The last wall's corner leads back to the first, closing the room.
     pub corner: Corner,
+    /// A photo of the wall to preview the design on, if the user added one.
+    #[serde(default)]
+    pub photo: Option<WallPhoto>,
+}
+
+/// A photo of a wall and where the wall sits in it. The image itself is
+/// stored elsewhere under `image_id`; layout never looks at it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct WallPhoto {
+    /// Identifies the stored image.
+    pub image_id: String,
+    /// Size of the stored image in pixels.
+    pub width: u32,
+    pub height: u32,
+    /// The wall's corners in the photo, ordered top-left, top-right,
+    /// bottom-right, bottom-left, as fractions of the image's width and
+    /// height from its top-left corner. A corner that is out of shot can lie
+    /// outside 0..1.
+    pub corners: [Point; 4],
 }
 
 /// What happens at the right-hand end of a wall. Walls are listed in order

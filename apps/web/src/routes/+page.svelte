@@ -1,6 +1,7 @@
 <script lang="ts">
 	import DesignEditor from '#lib/components/DesignEditor.svelte';
 	import Elevation from '#lib/components/Elevation.svelte';
+	import PhotoView from '#lib/components/PhotoView.svelte';
 	import PlanTables from '#lib/components/PlanTables.svelte';
 	import WallEditor from '#lib/components/WallEditor.svelte';
 	import { planProject, type Plan } from '#lib/engine/index.ts';
@@ -11,6 +12,11 @@
 	const units = $derived(project.units);
 
 	let selected = $state(0);
+	let view = $state<'drawing' | 'photo'>('drawing');
+	const VIEWS = [
+		{ id: 'drawing', label: 'Drawing' },
+		{ id: 'photo', label: 'Photo' }
+	] as const;
 	const wallIndex = $derived(Math.min(selected, project.walls.length - 1));
 
 	const result = $derived(planProject(project));
@@ -97,15 +103,39 @@
 			{/each}
 
 			<section class="panel" class:stale>
-				<Elevation
-					wall={project.walls[wallIndex]}
-					layout={plan.walls[wallIndex]}
-					design={project.design}
-					{units}
-				/>
-				{#each cornerNotes as entry (entry.end)}
-					<p class="note"><strong>{entry.end}:</strong> {entry.note}</p>
-				{/each}
+				<div class="tabs views" role="tablist" aria-label="View">
+					{#each VIEWS as option (option.id)}
+						<button
+							type="button"
+							role="tab"
+							aria-selected={view === option.id}
+							onclick={() => (view = option.id)}
+						>
+							{option.label}
+						</button>
+					{/each}
+				</div>
+				{#if view === 'photo'}
+					<!-- Keyed by wall so switching walls resets any tool in use. -->
+					{#key project.walls[wallIndex].id}
+						<PhotoView
+							bind:wall={project.walls[wallIndex]}
+							layout={plan.walls[wallIndex]}
+							design={project.design}
+							{units}
+						/>
+					{/key}
+				{:else}
+					<Elevation
+						wall={project.walls[wallIndex]}
+						layout={plan.walls[wallIndex]}
+						design={project.design}
+						{units}
+					/>
+					{#each cornerNotes as entry (entry.end)}
+						<p class="note"><strong>{entry.end}:</strong> {entry.note}</p>
+					{/each}
+				{/if}
 			</section>
 
 			<div class="panel tables" class:stale>
