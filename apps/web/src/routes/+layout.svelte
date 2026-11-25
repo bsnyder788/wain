@@ -1,14 +1,16 @@
 <script lang="ts">
 	import '../app.css';
 	import { page } from '$app/state';
+	import { account } from '#lib/account.svelte.ts';
 	import type { LayoutProps } from './$types';
 
 	let { children }: LayoutProps = $props();
 
-	const links = [
+	const links = $derived([
 		{ href: '/', label: 'Design' },
-		{ href: '/settings', label: 'Settings' }
-	];
+		{ href: '/settings', label: 'Settings' },
+		{ href: '/account', label: account.current.status === 'signed_in' ? 'Account' : 'Sign in' }
+	]);
 </script>
 
 <svelte:head>

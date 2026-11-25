@@ -1,5 +1,6 @@
 <script lang="ts">
 	import DesignEditor from '#lib/components/DesignEditor.svelte';
+	import DesignIdeas from '#lib/components/DesignIdeas.svelte';
 	import Elevation from '#lib/components/Elevation.svelte';
 	import PhotoView from '#lib/components/PhotoView.svelte';
 	import PlanTables from '#lib/components/PlanTables.svelte';
@@ -124,6 +125,9 @@
 							design={project.design}
 							{units}
 						/>
+						{#if project.walls[wallIndex].photo}
+							<DesignIdeas bind:project={session.project} {wallIndex} />
+						{/if}
 					{/key}
 				{:else}
 					<Elevation
